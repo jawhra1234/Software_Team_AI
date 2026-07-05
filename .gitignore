@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime workspaces (each project is git-backed at runtime)
+/workspaces/*
+!/workspaces/.gitkeep
+
+# Local databases / checkpoints
+*.sqlite
+*.sqlite3
+*.db
+
+# Node / frontend (later phases)
+node_modules/
+frontend/.next/
+
+# OS
+.DS_Store
+Thumbs.db
