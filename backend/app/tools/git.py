@@ -93,6 +93,18 @@ class Git:
             return self._run("diff", "HEAD").stdout
         return self._run("diff").stdout
 
+    def diff_name_status(self, ref: str) -> list[tuple[str, str]]:
+        """Return (status_letter, path) pairs for changes since ``ref`` (e.g. "A", "M", "D")."""
+        output = self._run("diff", "--name-status", ref).stdout
+        pairs: list[tuple[str, str]] = []
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            status, path = parts[0], parts[-1]  # renames (R100) carry old\tnew; take new path
+            pairs.append((status[0], path))
+        return pairs
+
 
 # ---------------------------------------------------------------------------
 # Tool wrappers

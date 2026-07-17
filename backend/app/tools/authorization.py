@@ -126,9 +126,11 @@ def execute_tool(
             log.warning("tool_command_rejected", tool=name, error=command_error)
             return ToolResult.failure(command_error)
 
+    # ADR-0009 autonomy matrix: `manual` gates commands too (it is the strictest
+    # level, not a lesser one) — the gate is live whenever autonomy != "auto".
     if (
         tool.requires_approval
-        and policy.autonomy == "semi"
+        and policy.autonomy != "auto"
         and approve is not None
         and not approve(name, dumped)
     ):

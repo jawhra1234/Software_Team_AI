@@ -85,7 +85,10 @@ class OllamaSettings(BaseModel):
     base_url: str = "http://localhost:11434"
     #: Keep models resident to avoid reload thrash between calls (ADR-0004).
     keep_alive: str = "30m"
-    request_timeout_s: float = 120.0
+    #: Generous default for local CPU inference (ADR-0004: 16 GB, no GPU). A full
+    #: structured-output emission on a 7B model can take minutes on CPU; lower this
+    #: substantially when running against a GPU or a hosted provider.
+    request_timeout_s: float = 600.0
     #: Default context window when a role does not override ``num_ctx``.
     default_num_ctx: int = 8192
 
@@ -189,6 +192,42 @@ class CoderSettings(BaseModel):
     check_timeout_s: float = 120.0
 
 
+class PlannerSettings(BaseModel):
+    """Bounded read-only grounding for the plan node (Task 2.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Max read-only tool-call rounds before forcing a plan emission.
+    grounding_steps: int = 6
+
+
+class CheckpointerSettings(BaseModel):
+    """LangGraph checkpointer backend (Task 2.11, ADR-0010)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend: Literal["sqlite", "postgres"] = "sqlite"
+    #: Used when backend == "sqlite".
+    sqlite_path: str = "./.aiswe/checkpoints.sqlite"
+
+
+class GraphSettings(BaseModel):
+    """Orchestration-level caps (Task 2.9/2.12)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: LangGraph recursion limit; must exceed the sum of bounded per-node retries
+    #: so escalation (not a raw recursion error) is always the terminal path.
+    recursion_limit: int = 200
+    max_verify_retries: int = 3
+    #: Review changes_requested -> fix cycles before escalating (ADR-0006).
+    max_review_cycles: int = 2
+    #: Run-wide budget defaults (distinct from CoderSettings' per-task budget).
+    max_run_steps: int = 60
+    max_run_wall_clock_s: float = 3600.0
+    max_run_tokens: int | None = None
+
+
 class Settings(BaseSettings):
     """Root application settings."""
 
@@ -212,6 +251,9 @@ class Settings(BaseSettings):
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     coder: CoderSettings = Field(default_factory=CoderSettings)
+    planner: PlannerSettings = Field(default_factory=PlannerSettings)
+    checkpointer: CheckpointerSettings = Field(default_factory=CheckpointerSettings)
+    graph: GraphSettings = Field(default_factory=GraphSettings)
 
 
 @lru_cache

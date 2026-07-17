@@ -5,8 +5,9 @@ sandbox, returning a structured :class:`VerifyResult`. A timeout counts as a
 failure (guards infinite loops). Output is truncated head+tail to protect the
 context budget.
 
-Note: ``VerifyResult``/``CheckResult`` are defined here for Phase 1; Phase 2
-reconciles them with the graph state schema (``ARCHITECTURE.md §5``).
+``VerifyResult``/``CheckResult`` are the canonical graph-state shapes defined in
+``app.graph.state`` (``ARCHITECTURE.md §5``); this module re-exports them so
+Phase 1 call sites are unaffected by the Phase 2 reconciliation.
 """
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, Field
-
 from app.core.config import CoderSettings
+from app.graph.state import CheckResult, VerifyResult
 from app.tools.authorization import truncate_output
 from app.tools.sandbox import Sandbox
+
+__all__ = ["Check", "CheckResult", "VerifyResult", "VerifyRunner", "detect_checks"]
 
 _IGNORE_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules"})
 
@@ -27,21 +29,6 @@ _IGNORE_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", "node_modules"
 class Check:
     name: str
     cmd: str
-
-
-class CheckResult(BaseModel):
-    name: str
-    cmd: str
-    passed: bool
-    exit_code: int
-    stdout_tail: str = ""
-    stderr_tail: str = ""
-
-
-class VerifyResult(BaseModel):
-    passed: bool
-    checks: list[CheckResult] = Field(default_factory=list)
-    summary: str = ""
 
 
 def detect_checks(workspace_path: Path) -> list[Check]:

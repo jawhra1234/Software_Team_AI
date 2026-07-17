@@ -13,17 +13,16 @@ models emit calls as text) — the same robustness class as ``structured_call``.
 from __future__ import annotations
 
 import hashlib
-import json
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from app.agents.budget import BudgetTracker
+from app.agents.toolcalls import extract_tool_calls
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.providers.base import ChatMessage, LLMProvider, ToolCall
-from app.tools.authorization import AuthorizationPolicy, execute_tool
+from app.providers.base import ChatMessage, LLMProvider
+from app.tools.authorization import ApprovalHook, AuthorizationPolicy, execute_tool
 from app.tools.base import ToolContext, ToolRegistry
 from app.tools.control import FINISH_TASK
 
@@ -75,11 +74,15 @@ class Coder:
         settings: Settings,
         *,
         autonomy: Literal["manual", "semi", "auto"] = "auto",
+        approve: ApprovalHook | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._settings = settings
         self._policy = AuthorizationPolicy.from_settings(settings, autonomy=autonomy)
+        #: Command-approval hook (Task 2.8); wired to a LangGraph interrupt by
+        #: the graph's coder node. None locally reproduces Phase-1 behavior.
+        self._approve = approve
 
     def run_task(self, task: CoderTask, ctx: ToolContext) -> CoderOutcome:
         budget = BudgetTracker.from_settings(self._settings.coder)
@@ -101,7 +104,7 @@ class Coder:
             if response.usage is not None:
                 budget.add_tokens(response.usage.output_tokens or 0)
 
-            calls = _extract_tool_calls(response.content, response.tool_calls, self._registry)
+            calls = extract_tool_calls(response.content, response.tool_calls, self._registry)
             messages.append(
                 ChatMessage(role="assistant", content=response.content, tool_calls=calls or None)
             )
@@ -123,7 +126,10 @@ class Coder:
                     summary = str(call.arguments.get("summary", "task finished"))
                     log.info("coder_finished", steps=budget.steps)
                     return CoderOutcome("completed", summary, budget.steps)
-                result = execute_tool(self._registry, call.name, call.arguments, ctx, self._policy)
+                result = execute_tool(
+                    self._registry, call.name, call.arguments, ctx, self._policy,
+                    approve=self._approve,
+                )
                 observation = (
                     result.output if result.ok else f"ERROR: {result.error}\n{result.output}"
                 )
@@ -133,7 +139,7 @@ class Coder:
                     )
                 )
 
-            budget.record_progress(_workspace_signature(ctx.workspace_path))
+            budget.record_progress(workspace_signature(ctx.workspace_path))
             if budget.no_progress_reason() is not None:
                 return CoderOutcome("no_progress", "repeated steps without changes", budget.steps)
 
@@ -148,51 +154,7 @@ def _render_task(task: CoderTask) -> str:
     return "\n".join(parts)
 
 
-def _extract_tool_calls(
-    content: str, native: Sequence[ToolCall], registry: ToolRegistry
-) -> list[ToolCall]:
-    """Prefer native tool_calls; else parse a JSON envelope from content."""
-    if native:
-        return list(native)
-    parsed = _parse_json(content)
-    if parsed is None:
-        return []
-    envelopes = parsed if isinstance(parsed, list) else [parsed]
-    calls: list[ToolCall] = []
-    for idx, item in enumerate(envelopes):
-        if not isinstance(item, dict):
-            continue
-        func = item.get("function")
-        node: dict[str, Any] = func if isinstance(func, dict) else item
-        name = node.get("name")
-        args = node.get("arguments", node.get("parameters", {}))
-        if isinstance(name, str) and name in registry and isinstance(args, dict):
-            calls.append(ToolCall(id=str(idx), name=name, arguments=args))
-    return calls
-
-
-def _parse_json(text: str) -> Any:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        stripped = "\n".join(lines).strip()
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        start, end = stripped.find("{"), stripped.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(stripped[start : end + 1])
-            except json.JSONDecodeError:
-                return None
-        return None
-
-
-def _workspace_signature(root: Path) -> str:
+def workspace_signature(root: Path) -> str:
     """Content hash of workspace files (for no-progress detection)."""
     digest = hashlib.sha1()
     for path in sorted(root.rglob("*")):

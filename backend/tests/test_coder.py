@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.agents.coder import Coder, CoderTask, _extract_tool_calls, _workspace_signature
+from app.agents.coder import Coder, CoderTask, workspace_signature
 from app.core.config import CoderSettings, Settings
 from app.providers.base import Capabilities, ChatResponse, ToolCall
 from app.tools.base import ToolContext
@@ -67,22 +67,8 @@ def test_coder_no_progress_when_not_calling_tools(tmp_path: Path) -> None:
     assert outcome.status == "no_progress"
 
 
-def test_extract_tool_calls_from_content_envelope(tmp_path: Path) -> None:
-    registry = build_default_registry()
-    # Native tool_calls preferred.
-    native = _extract_tool_calls("", [ToolCall(id="1", name="list_dir", arguments={})], registry)
-    assert native[0].name == "list_dir"
-    # Envelope parsed from content when native is empty.
-    parsed = _extract_tool_calls(
-        '{"name": "read_file", "arguments": {"path": "a.py"}}', [], registry
-    )
-    assert parsed and parsed[0].name == "read_file"
-    # Unknown tool names are ignored.
-    assert _extract_tool_calls('{"name": "nope", "arguments": {}}', [], registry) == []
-
-
 def test_workspace_signature_changes_with_content(tmp_path: Path) -> None:
-    sig0 = _workspace_signature(tmp_path)
+    sig0 = workspace_signature(tmp_path)
     (tmp_path / "f.py").write_text("x=1\n", encoding="utf-8")
-    sig1 = _workspace_signature(tmp_path)
+    sig1 = workspace_signature(tmp_path)
     assert sig0 != sig1

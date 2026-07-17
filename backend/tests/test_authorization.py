@@ -114,6 +114,34 @@ def test_approval_hook_denies_in_semi(tmp_path: Path) -> None:
     assert "approval denied" in (result.error or "")
 
 
+def test_approval_hook_also_gates_in_manual(tmp_path: Path) -> None:
+    # ADR-0009: manual is the strictest level, so it must gate commands too.
+    policy = AuthorizationPolicy.from_settings(Settings(_env_file=None), autonomy="manual")
+    result = execute_tool(
+        _registry(),
+        "run_dummy",
+        {"command": "python x.py"},
+        _ctx(tmp_path),
+        policy,
+        approve=lambda _name, _args: False,
+    )
+    assert not result.ok
+    assert "approval denied" in (result.error or "")
+
+
+def test_approval_hook_not_gated_in_auto(tmp_path: Path) -> None:
+    policy = AuthorizationPolicy.from_settings(Settings(_env_file=None), autonomy="auto")
+    result = execute_tool(
+        _registry(),
+        "run_dummy",
+        {"command": "python x.py"},
+        _ctx(tmp_path),
+        policy,
+        approve=lambda _name, _args: False,  # would deny, but auto never asks
+    )
+    assert result.ok
+
+
 def test_truncate_output() -> None:
     text = "x" * 100
     out = truncate_output(text, 20)

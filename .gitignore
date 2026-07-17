@@ -24,6 +24,9 @@ dist/
 *.sqlite3
 *.db
 
+# LangGraph Studio / `langgraph dev` local runtime cache
+.langgraph_api/
+
 # Node / frontend (later phases)
 node_modules/
 frontend/.next/
