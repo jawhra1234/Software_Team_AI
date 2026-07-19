@@ -35,8 +35,11 @@ from app.graph.nodes.plan import make_plan_node
 from app.graph.nodes.review_stub import make_review_node
 from app.graph.nodes.verify import make_verify_node
 from app.graph.state import AgentState
+from app.memory.episodic import EpisodicMemory
+from app.memory.long_term import LongTermMemory
 from app.providers.base import LLMProvider
 from app.providers.factory import get_provider
+from app.rag.retriever import Retriever
 from app.tools.registry import build_default_registry, build_planner_registry
 from app.tools.sandbox import Sandbox, get_sandbox
 
@@ -51,12 +54,24 @@ def build_graph(
     sink: EventSink | None = None,
     planner_provider: LLMProvider | None = None,
     coder_provider: LLMProvider | None = None,
+    retriever: Retriever | None = None,
+    episodic: EpisodicMemory | None = None,
+    long_term: LongTermMemory | None = None,
 ) -> _CompiledGraph:
     """Assemble and compile the orchestration graph.
 
-    ``planner_provider``/``coder_provider`` override the role resolved via
-    ``get_provider`` — the same dependency-injection seam as ``sandbox`` and
-    ``checkpointer``, used by tests to inject a scripted provider.
+    ``planner_provider``/``coder_provider`` override what would otherwise be
+    resolved from ``settings`` — the same dependency-injection seam as
+    ``sandbox``/``checkpointer``, used by tests to inject scripted providers.
+
+    ``retriever``/``episodic``/``long_term`` are opt-in and default to ``None``
+    (RAG + both memory reads silently degrade to no-ops in that case — see
+    ``tools/retrieve.py``, ``graph/nodes/finalize.py`` and
+    ``graph/planning_context.py``). They are **not** auto-built from settings
+    here, because that would make ``finalize`` depend on Postgres reachability
+    for every caller, including hermetic tests — exactly what ADR-0010's
+    "SQLite is the clone-and-run default" is meant to avoid. Callers who want
+    live RAG/memory build the stack explicitly: ``build_rag_stack(settings)``.
     """
     sink = sink or NullEventSink()
     sandbox = sandbox or get_sandbox(settings.sandbox)
@@ -74,7 +89,12 @@ def build_graph(
     # runtime issue (verified empirically; see the Phase 2 completion report).
     graph: StateGraph[AgentState] = StateGraph(AgentState)
     graph.add_node(  # type: ignore[call-overload]
-        "plan", instrument_node("plan", make_plan_node(planner), sink)
+        "plan",
+        instrument_node(
+            "plan",
+            make_plan_node(planner, retriever, long_term, episodic, settings=settings.planner),
+            sink,
+        ),
     )
     graph.add_node(  # type: ignore[call-overload]
         "human_gate",
@@ -83,7 +103,9 @@ def build_graph(
     graph.add_node(  # type: ignore[call-overload]
         "coder",
         instrument_node(
-            "coder", make_coder_node(coder_provider, coder_registry, settings, sandbox), sink
+            "coder",
+            make_coder_node(coder_provider, coder_registry, settings, sandbox, retriever),
+            sink,
         ),
     )
     graph.add_node(  # type: ignore[call-overload]
@@ -94,7 +116,8 @@ def build_graph(
         "review", instrument_node("review", make_review_node(settings.graph), sink)
     )
     graph.add_node(  # type: ignore[call-overload]
-        "finalize", instrument_node("finalize", make_finalize_node(), sink, enforce_budget=False)
+        "finalize",
+        instrument_node("finalize", make_finalize_node(episodic), sink, enforce_budget=False),
     )
 
     graph.add_edge(START, "plan")

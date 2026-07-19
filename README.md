@@ -10,8 +10,9 @@ tool boundaries, context isolation, and verification — not by human job titles
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the decision records in
 [`docs/adr/`](docs/adr/) for the full design and rationale.
 
-> **Status:** Phase 0 (Foundations), Phase 1 (Core coder loop), and Phase 2 (LangGraph
-> orchestration + HITL) are complete and verified. Phases 3–7 are specced in
+> **Status:** Phase 0 (Foundations), Phase 1 (Core coder loop), Phase 2 (LangGraph
+> orchestration + HITL), and Phase 3 (Repository indexing, hybrid RAG, and memory) are
+> complete and verified. Phases 4–7 are specced in
 > [`docs/build-plans/`](docs/build-plans/) and not yet implemented.
 
 ---
@@ -62,7 +63,9 @@ is what happens *inside a single run* (right now, at any point in the project); 
   can retry, accept the current state as-is, or abort the run.
 ```
 
-- **`plan`** — grounds itself in the real repo (read-only tools), drafts a task list, and
+- **`plan`** — before drafting, it's automatically handed relevant **memory** (durable
+  decisions/conventions + how earlier runs on this project went); it then grounds in the
+  real repo (hybrid RAG via the `retrieve` tool + read-only tools), drafts a task list, and
   only pauses to ask the human a question when it's genuinely blocking.
 - **`human_gate`** — the *one* place a human is asked anything: approve the plan, resolve
   an escalation, or sign off on the final result. What it asks for depends on the
@@ -79,7 +82,7 @@ is what happens *inside a single run* (right now, at any point in the project); 
 
 ```
   0 ──▶ 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 5 ──▶ 6 ──▶ 7
-  ✅    ✅    ✅    📋    📋    📋    📋    📋
+  ✅    ✅    ✅    ✅    📋    📋    📋    📋
 ```
 
 | # | Phase | What it adds |
@@ -126,13 +129,15 @@ Three deliberately separated sources of truth keep it honest and cheap on a 16 G
 | Retrievable knowledge (code chunks, memory) | Vector store + Postgres |
 
 The full graph — `plan · human_gate · coder · verify · review · finalize` — is
-implemented and compiled as a real LangGraph `StateGraph` (Phase 2). Everything runs
-locally on **one primary Ollama model** (`qwen2.5-coder:7b`), with a config-only path to
-swap in OpenRouter / Gemini / Groq / OpenAI later.
+implemented and compiled as a real LangGraph `StateGraph` (Phase 2), and its `plan`/`coder`
+grounding seam is now backed by **hybrid RAG over the real repository** plus **long-term and
+episodic memory** (Phase 3). Everything runs locally on **one primary Ollama model**
+(`qwen2.5-coder:7b`) with `nomic-embed-text` for embeddings, and a config-only path to swap
+in OpenRouter / Gemini / Groq / OpenAI later.
 
 ---
 
-## What's implemented (Phases 0–2)
+## What's implemented (Phases 0–3)
 
 ### Phase 0 — Foundations
 - **Config** (`app/core/config.py`): `pydantic-settings` with a per-role model block
@@ -224,6 +229,119 @@ graph with the real `qwen2.5-coder:7b` model — plan → coder → verify → r
 and it produces correct, test-passing code (`calc.py` + a passing `test_calc.py`), reaching
 `status: succeeded`, including the coder recovering from a failed command mid-task.
 
+### Phase 3 — Repository indexing, hybrid RAG, and memory
+
+This phase upgrades the single grounding seam from Phase 2 (ripgrep) into real hybrid
+retrieval, and adds durable memory — **without touching the graph's shape**. RAG and memory
+are wired as **opt-in dependencies** (default `None`), so the hermetic test suite stays fast
+and independent of Postgres.
+
+- **Structural chunker** (`app/rag/chunker.py`): tree-sitter splits source into
+  symbol-aware chunks (functions/classes with their signatures), not blind line windows —
+  so a retrieved chunk is a whole, meaningful unit.
+- **Embeddings** (`app/rag/embeddings.py`): `nomic-embed-text` (768-dim) via the provider
+  abstraction, cached by chunk `content_hash` so re-indexing an unchanged chunk costs
+  nothing. `nomic` is asymmetric, so documents and queries get their required
+  `search_document:` / `search_query:` task prefixes (measurably tighter margins — see below).
+- **Vector store** (`app/rag/vector_store.py`): pgvector cosine similarity, namespaced per
+  project, with a symbol-name lookup for exact-symbol queries.
+- **Keyword index** (`app/rag/keyword_index.py`): in-memory BM25Plus — exact symbol names
+  dominate code queries, where pure vectors are weak.
+- **Hybrid retriever** (`app/rag/retriever.py`): runs the vector and BM25 arms independently
+  and fuses them with **Reciprocal Rank Fusion** — *no cross-encoder reranker* (ADR-0008);
+  RRF combines both without tuning score scales.
+- **Incremental indexer** (`app/rag/indexer.py`): content-hash diffing so a reindex only
+  touches changed files; drives the `retrieve` tool and the graph's `RetrievalCapture`.
+- **`retrieve` tool** (`app/tools/retrieve.py`): exposes hybrid retrieval to the agents; the
+  planner and coder now call it as their **first grounding step**, and results are captured
+  into `retrieved_context` on graph state (`app/graph/retrieval.py`).
+- **Long-term memory** (`app/memory/long_term.py`): a namespaced pgvector store of durable
+  facts (decisions, learned repo conventions), retrieved by **semantic** similarity — kept
+  separate from the churny code index. Populated by a deterministic writer
+  (`app/memory/ingest.py` + `scripts/seed_memory.py`) that ingests the repo's own ADRs as
+  `decision` memories, so the store has real content on day one.
+- **Episodic memory** (`app/memory/episodic.py`): run outcomes written at `finalize`.
+  Retrieval isn't blind recency — `relevant()` re-ranks a recent window by **lexical**
+  overlap with the request plus a failure bonus (past failures are the useful lesson), since
+  summaries are mostly filenames/symbols/errors.
+- **Memory in the planner** (`app/graph/planning_context.py`): before planning, the plan node
+  searches long-term (semantic) + episodic (lexical) and injects two clearly-labeled sections
+  — **Project Conventions** and **Previous Attempts** — into the planner's prompt, each shown
+  only when non-empty. Repository code is **not** preloaded here: it stays on-demand via the
+  `retrieve` tool, so tokens stay bounded and the agentic loop is preserved. All reads are
+  best-effort (a memory outage degrades a section, never fails the run).
+- **Evaluation** (`app/rag/evaluation.py`): retrieval-quality metrics (hit-rate / MRR) for
+  regression tracking.
+- **File-size guard** (`app/tools/fs.py`): a 1 MiB cap on `write_file` / `edit_file`, added
+  after live validation surfaced a runaway-edit failure mode (below).
+
+**Verified — retrieval works on the real codebase:** indexing this repo (103 files → 773
+chunks) and querying it, hybrid retrieval returns the right symbols for both **exact** symbol
+queries and **semantic paraphrases** that share no keywords with the target — with the
+`nomic` task prefixes improving the query↔target cosine margin (e.g. `+0.580 → +0.614` on the
+validation fixture).
+
+#### Does RAG actually change agent behavior? (RAG OFF vs RAG ON)
+
+Components passing tests isn't proof that retrieval *helps the agent*. So the whole LangGraph
+pipeline (plan → retrieve → coder → verify → review → finalize → memory) was run live against
+a controlled fixture: a checkout task whose correct answer depends on a **non-guessable helper**
+(`apply_levy`, with a bespoke surcharge/rounding rule) that lives in the indexed repo but is
+**never named in the task**. The task is only solvable if the agent *discovers* the helper.
+
+| | **RAG OFF** | **RAG ON** |
+|---|---|---|
+| `retrieve` | `ok: false` (no index, by design) | **`ok: true` — called repeatedly** |
+| `retrieved_context` | **0 chunks** | **10 chunks** — incl. `apply_levy`, `test_exact_values` |
+| Found the hidden helper? | **No** — never sees `apply_levy` | **Yes** — wrote correct `from pricing_rules import apply_levy` / `return apply_levy(...)` |
+| Node timeline | plan → escalate → finalize | plan `[retrieved 5]` → coder → retrieve → coder `[retrieved 10]` → … |
+
+**What we concluded:**
+
+1. **RAG demonstrably changes behavior.** With retrieval on, the coder grounds on the real
+   helper and writes the correct, reuse-based solution; with it off, it never finds the helper
+   and dead-ends. This is the core Phase-3 thesis, shown end-to-end through the actual graph,
+   not just in unit tests.
+2. **The local 7B model is the ceiling, not the design.** On this hard task both arms ended
+   `failed` for **model-quality** reasons (not RAG/orchestration defects): the planner
+   sometimes emitted an invalid task `kind`, and the coder, after writing correct code,
+   corrupted the file by misusing `edit_file` as a full-file rewrite. The harness (budgets,
+   no-progress detection, HITL escalation) caught every one cleanly instead of hanging. Both
+   quirks are now **hardened** (see below), and the same pipeline runs fully green on a task
+   within the model's reach.
+3. **Real bugs were found and fixed** — hardening, not benchmark-tuning:
+   - a 1 MiB cap on `write_file`/`edit_file` turns a runaway edit loop into an immediate tool
+     failure the model can react to (was: a file ballooning to hundreds of MB);
+   - a tolerant `Task.kind` coercion maps an off-enum value (e.g. a tool name) to a safe
+     default instead of failing the whole Plan;
+   - integration tests use isolated memory tables so a 2-dim test embedder can't clash with
+     the real 768-dim store.
+
+The provider abstraction (`app/providers/`) means a fully-green end-to-end run is a
+**config-only swap** to a frontier hosted model; the local `qwen2.5-coder:7b` remains the
+zero-cost default for development, and its stumbles double as a live demonstration that the
+guardrails work under a weak model.
+
+#### Does past experience change future planning? (memory across runs)
+
+A second live harness (`scripts/memory_e2e.py`) proves the memory loop end-to-end by running
+the **same project twice**:
+
+- **Run 1** plans with an empty episodic store → only **Project Conventions** is injected
+  (Previous Attempts is correctly omitted). At `finalize`, the run's outcome is written to
+  episodic memory.
+- **Run 2** (a related request) now retrieves that record: its planner prompt carries **both**
+  sections — Project Conventions *and* a **Previous Attempts** entry naming run 1 — proving a
+  prior run measurably shapes later planning. Repository `retrieve` still fires independently.
+
+**Full green happy path** (`scripts/memory_e2e.py simple`): on a trivial self-contained task,
+the whole pipeline runs clean — `plan → coder → verify PASS → review approve → finalize
+succeeded` — with memory wired in and a `succeeded` record written back. This is the same
+architecture as the hard task; only the task difficulty (not the design) decides the outcome.
+
+Validation harnesses: `scripts/rag_validate.py` (`part1` retrieval, `abtest` RAG off/on) and
+`scripts/memory_e2e.py` (cross-run memory; `simple` for the green happy path).
+
 ---
 
 ## Repository layout
@@ -240,12 +358,14 @@ and it produces correct, test-passing code (`calc.py` + a passing `test_calc.py`
 │  │  │  └─ nodes/         # plan, coder, verify, review_stub, finalize, human_gate
 │  │  ├─ verify/           # deterministic verify runner
 │  │  ├─ workspace/        # git-backed workspace lifecycle
-│  │  ├─ memory/ rag/ db/ api/   # placeholders for Phase 3+
+│  │  ├─ rag/              # chunker, embeddings, vector store, BM25, hybrid retriever, indexer, eval
+│  │  ├─ memory/           # long-term (semantic) + episodic memory + ADR ingestion writer
+│  │  ├─ db/ api/          # placeholders for Phase 6+
 │  │  └─ ...
 │  ├─ tests/               # hermetic + integration tests
 │  └─ langgraph.json       # LangGraph Studio entry point
 ├─ infra/                  # docker-compose, Postgres init, sandbox image
-├─ scripts/                # bootstrap + smoke scripts
+├─ scripts/                # bootstrap, smoke, seed_memory, and live validation harnesses
 ├─ docs/                   # ARCHITECTURE.md, ADRs, phased build plans
 └─ workspaces/             # runtime project sandboxes (git-ignored)
 ```
@@ -284,7 +404,16 @@ uv run python ../scripts/smoke_llm.py
 #    (on a 16 GB CPU box, lower the context + use the subprocess sandbox to fit RAM)
 $env:OLLAMA__DEFAULT_NUM_CTX=4096; $env:SANDBOX__BACKEND="subprocess"; uv run python ../scripts/smoke_graph.py
 
-# 7. Inspect the compiled graph visually (optional)
+# 7. Seed long-term memory from the repo's ADRs (needs pgvector)
+uv run python ../scripts/seed_memory.py my-project
+
+# 8. Validate live (needs pgvector). Each is a self-contained evidence harness:
+uv run python ../scripts/rag_validate.py part1     # retrieval works on the real repo
+uv run python ../scripts/rag_validate.py abtest    # does RAG change agent behavior?
+uv run python ../scripts/memory_e2e.py             # does a past run change future planning?
+uv run python ../scripts/memory_e2e.py simple      # full green pipeline on a trivial task
+
+# 9. Inspect the compiled graph visually (optional)
 uvx --with-editable . --from "langgraph-cli[inmem]" langgraph dev
 ```
 
@@ -317,16 +446,19 @@ CHECKPOINTER__BACKEND=postgres       # durable checkpointer: sqlite (default) or
 GRAPH__RECURSION_LIMIT=200           # graph-level recursion cap (above the run step budget)
 OLLAMA__REQUEST_TIMEOUT_S=600        # generous for local CPU; lower for GPU/hosted
 OLLAMA__DEFAULT_NUM_CTX=4096         # smaller context = less RAM (helps on a 16 GB box)
+PLANNER__MEMORY_LONG_TERM_K=5        # conventions/decisions injected into planning
+PLANNER__MEMORY_EPISODIC_K=3         # past runs surfaced as "Previous Attempts"
 ```
 
 ---
 
 ## Testing
 
-- **Hermetic** (`uv run pytest`) — no external services; runs by default (165 tests).
+- **Hermetic** (`uv run pytest`) — no external services; runs by default (219 tests).
 - **Integration** (`uv run pytest -m integration`) — requires live Ollama, Docker, and/or
   Postgres depending on the test; opt-in so the default run stays fast and deterministic
-  (7 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run).
+  (26 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run, and the
+  RAG/embeddings/retriever/memory + memory-in-planner stack against real pgvector).
 
 ---
 
@@ -337,7 +469,7 @@ OLLAMA__DEFAULT_NUM_CTX=4096         # smaller context = less RAM (helps on a 16
 | 0 | Foundations (config, providers, structured output, logging/tracing, infra) | ✅ Complete |
 | 1 | Core coder loop (tools, sandbox, git workspace, verify, budgets) | ✅ Complete |
 | 2 | LangGraph orchestration + HITL (`plan→…→finalize`, checkpointer, interrupts) | ✅ Complete |
-| 3 | Repository indexing, hybrid RAG, memory | 📋 Specced |
+| 3 | Repository indexing, hybrid RAG, memory | ✅ Complete |
 | 4 | Adversarial reviewer + iteration | 📋 Planned |
 | 5 | Eval harness | 📋 Planned |
 | 6 | Mission-control UI | 📋 Planned |

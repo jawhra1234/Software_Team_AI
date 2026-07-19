@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.tools.base import ToolContext
 from app.tools.fs import (
+    _MAX_FILE_BYTES,
     EditFile,
     EditFileArgs,
     ListDir,
@@ -67,6 +68,27 @@ def test_edit_ambiguous_requires_replace_all(tmp_path: Path) -> None:
         EditFileArgs(path="f.py", old_string="x", new_string="y", replace_all=True), ctx
     )
     assert ok.ok and (tmp_path / "f.py").read_text() == "y\ny\n"
+
+
+def test_write_rejects_oversize_file(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    huge = "a" * (_MAX_FILE_BYTES + 1)
+    result = WriteFile().run(WriteFileArgs(path="big.txt", content=huge), ctx)
+    assert not result.ok and "exceeds" in (result.error or "")
+    assert not (tmp_path / "big.txt").exists()
+
+
+def test_edit_rejects_runaway_growth(tmp_path: Path) -> None:
+    """A single valid edit whose new_string blows the file past the cap is refused,
+    and the original file is left untouched (the runaway-edit guard)."""
+    ctx = _ctx(tmp_path)
+    WriteFile().run(WriteFileArgs(path="f.py", content="seed\n"), ctx)
+    result = EditFile().run(
+        EditFileArgs(path="f.py", old_string="seed", new_string="a" * (_MAX_FILE_BYTES + 1)),
+        ctx,
+    )
+    assert not result.ok and "exceed" in (result.error or "")
+    assert (tmp_path / "f.py").read_text() == "seed\n"
 
 
 def test_list_dir(tmp_path: Path) -> None:

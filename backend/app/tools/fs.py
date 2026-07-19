@@ -15,6 +15,19 @@ from app.tools.security import resolve_within
 
 _MAX_LIST_ENTRIES = 500
 
+#: Hard cap on the byte size of a file this tool will write. Source files are
+#: virtually never this large; the cap exists to stop a runaway edit loop from
+#: ballooning a file (a bad-but-individually-valid sequence of edits can grow a
+#: file geometrically). The tool returns a normal failure so the model sees it
+#: and backs off, rather than silently committing a pathological file.
+_MAX_FILE_BYTES = 1024 * 1024
+
+
+def _too_large(content: str) -> int | None:
+    """Return the byte size if it exceeds the cap, else None."""
+    size = len(content.encode("utf-8"))
+    return size if size > _MAX_FILE_BYTES else None
+
 
 class ReadFileArgs(BaseModel):
     path: str = Field(description="Workspace-relative path to read.")
@@ -55,6 +68,12 @@ class WriteFile(Tool[WriteFileArgs]):
 
     def run(self, args: WriteFileArgs, ctx: ToolContext) -> ToolResult:
         target = resolve_within(ctx.workspace_path, args.path)
+        oversize = _too_large(args.content)
+        if oversize is not None:
+            return ToolResult.failure(
+                f"refusing to write {oversize} bytes to {args.path}: "
+                f"exceeds the {_MAX_FILE_BYTES}-byte limit"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(args.content, encoding="utf-8")
         return ToolResult.success(
@@ -95,6 +114,12 @@ class EditFile(Tool[EditFileArgs]):
                 "pass replace_all=true or provide a more specific string"
             )
         updated = text.replace(args.old_string, args.new_string)
+        oversize = _too_large(updated)
+        if oversize is not None:
+            return ToolResult.failure(
+                f"refusing to write {oversize} bytes to {args.path}: edit would exceed "
+                f"the {_MAX_FILE_BYTES}-byte limit (possible runaway edit — check new_string)"
+            )
         target.write_text(updated, encoding="utf-8")
         return ToolResult.success(
             output=f"edited {args.path} ({count} replacement(s))", path=args.path

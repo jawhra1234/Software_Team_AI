@@ -58,6 +58,32 @@ def _coerce_str_list(value: Any) -> Any:
 StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
 
 
+_VALID_TASK_KINDS = frozenset({"create", "modify", "test", "docs", "fix"})
+
+
+def _coerce_task_kind(value: object) -> object:
+    """Tolerate a small model emitting an out-of-enum ``kind``.
+
+    Local models sometimes set a task's ``kind`` to a tool name ('retrieve',
+    'read_file', 'list_dir') or another off-enum string. ``kind`` is descriptive
+    metadata only — routing keys off ``HITLRequest.kind``, never ``Task.kind`` —
+    so an unrecognised value must not fail the whole Plan. Map anything
+    unrecognised to 'modify' (safe, neutral); recognised values pass through
+    normalised (case-insensitive). Non-strings are left for normal validation.
+    """
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        return lowered if lowered in _VALID_TASK_KINDS else "modify"
+    return value
+
+
+#: A task kind tolerant of a small model emitting an off-enum value (e.g. a tool name).
+TaskKind = Annotated[
+    Literal["create", "modify", "test", "docs", "fix"],
+    BeforeValidator(_coerce_task_kind),
+]
+
+
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
@@ -92,7 +118,7 @@ class Task(BaseModel):
     id: str = Field(description="Short stable id, e.g. 'task-1', 'task-2'.")
     title: str = Field(description="Short imperative title, e.g. 'Add add() to calc.py'.")
     description: str = Field(description="What to do and why, specific enough to act on.")
-    kind: Literal["create", "modify", "test", "docs", "fix"]
+    kind: TaskKind
     target_paths: StrList = Field(
         default_factory=list, description="Workspace-relative files this task will touch."
     )

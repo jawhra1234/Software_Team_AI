@@ -34,3 +34,6 @@ frontend/.next/
 # OS
 .DS_Store
 Thumbs.db
+
+# validation run logs (transient output)
+scripts/*.log

@@ -62,6 +62,11 @@ class Git:
     def status(self) -> str:
         return self._run("status", "--short", "--branch").stdout
 
+    def ls_files(self) -> list[str]:
+        """Tracked + untracked-but-not-ignored files (respects .gitignore)."""
+        result = self._run("ls-files", "--cached", "--others", "--exclude-standard")
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
     def add_all(self) -> None:
         self._run("add", "-A", check=True)
 

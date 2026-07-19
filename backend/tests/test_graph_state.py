@@ -68,6 +68,17 @@ def test_task_coerces_object_acceptance_criteria_to_strings() -> None:
     assert task.acceptance_criteria[1] == "calc.py defines add(a, b)"
 
 
+def test_task_coerces_offenum_kind_to_modify() -> None:
+    # Exactly the failure qwen2.5-coder produced live: kind set to a tool name.
+    task = Task(id="t", title="t", description="d", kind="retrieve")  # type: ignore[arg-type]
+    assert task.kind == "modify"
+
+
+def test_task_kind_is_case_insensitive_and_valid_passes() -> None:
+    assert Task(id="t", title="t", description="d", kind="CREATE").kind == "create"  # type: ignore[arg-type]
+    assert Task(id="t", title="t", description="d", kind="fix").kind == "fix"
+
+
 def test_plan_coerces_object_requirements_to_strings() -> None:
     plan = Plan(
         summary="s",

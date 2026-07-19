@@ -13,6 +13,7 @@ models emit calls as text) — the same robustness class as ``structured_call``.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -23,8 +24,12 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.providers.base import ChatMessage, LLMProvider
 from app.tools.authorization import ApprovalHook, AuthorizationPolicy, execute_tool
-from app.tools.base import ToolContext, ToolRegistry
+from app.tools.base import ToolContext, ToolRegistry, ToolResult
 from app.tools.control import FINISH_TASK
+
+#: Called after every executed tool call (name, result) — e.g. to capture
+#: `retrieve` results into graph state (Task 3.12). Never affects control flow.
+ToolResultHook = Callable[[str, ToolResult], None]
 
 log = get_logger("agents.coder")
 
@@ -54,8 +59,11 @@ You are an autonomous software engineer working inside a sandboxed git workspace
 The workspace directory is your current working directory.
 
 Rules:
-- Ground before acting: read existing files with read_file / list_dir / search_code
-  before assuming anything. Never invent file contents.
+- Ground before acting. If the task refers to existing behaviour, a rule, or a
+  helper, FIRST call `retrieve` to find the relevant code and symbols in the
+  indexed codebase, then read_file / list_dir / search_code to inspect specifics.
+  Never invent file contents, and never reimplement something that already
+  exists — find it with `retrieve` and reuse it.
 - Make the smallest change that satisfies the acceptance criteria.
 - Use write_file / edit_file to change files, and run_command to run tests/builds.
 - Verify your work by running the tests with run_command (e.g. `python -m pytest -q`).
@@ -75,6 +83,7 @@ class Coder:
         *,
         autonomy: Literal["manual", "semi", "auto"] = "auto",
         approve: ApprovalHook | None = None,
+        on_tool_result: ToolResultHook | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -83,6 +92,8 @@ class Coder:
         #: Command-approval hook (Task 2.8); wired to a LangGraph interrupt by
         #: the graph's coder node. None locally reproduces Phase-1 behavior.
         self._approve = approve
+        #: Tool-result observer (Task 3.12); e.g. captures retrieve() hits into state.
+        self._on_tool_result = on_tool_result
 
     def run_task(self, task: CoderTask, ctx: ToolContext) -> CoderOutcome:
         budget = BudgetTracker.from_settings(self._settings.coder)
@@ -130,6 +141,8 @@ class Coder:
                     self._registry, call.name, call.arguments, ctx, self._policy,
                     approve=self._approve,
                 )
+                if self._on_tool_result is not None:
+                    self._on_tool_result(call.name, result)
                 observation = (
                     result.output if result.ok else f"ERROR: {result.error}\n{result.output}"
                 )

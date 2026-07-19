@@ -62,7 +62,24 @@ class SearchCode(Tool[SearchCodeArgs]):
         clipped = matches[: args.max_results]
         note = "" if total <= args.max_results else f"\n...[{total - args.max_results} more]"
         output = ("\n".join(clipped) + note) if clipped else "(no matches)"
+
+        # Symbol-backed augmentation (Task 3.9): when a code index is bound, prepend
+        # matching symbol definitions from the index. Additive — pure ripgrep/Python
+        # text search behaviour is unchanged when no retriever is present.
+        symbol_section = self._symbol_lookup(args.query, ctx)
+        if symbol_section:
+            output = f"{symbol_section}\n\n{output}"
         return ToolResult.success(output=output, matches=total)
+
+    @staticmethod
+    def _symbol_lookup(query: str, ctx: ToolContext) -> str:
+        if ctx.retriever is None or ctx.project_id is None or not query.strip():
+            return ""
+        symbols = ctx.retriever.find_symbols(ctx.project_id, query.strip(), limit=10)
+        if not symbols:
+            return ""
+        lines = [f"{path}:{line}: {symbol}" for symbol, path, line in symbols]
+        return "Symbols:\n" + "\n".join(lines)
 
     def _ripgrep(self, rg: str, args: SearchCodeArgs, target: Path) -> list[str] | None:
         cmd = [rg, "--line-number", "--no-heading", "--color", "never"]

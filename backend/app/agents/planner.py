@@ -9,6 +9,7 @@ a recorded ``assumption`` so planning can proceed without a human round-trip.
 
 from __future__ import annotations
 
+from app.agents.coder import ToolResultHook
 from app.agents.toolcalls import extract_tool_calls
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -25,8 +26,14 @@ You are the planning agent for an AI software engineering workspace.
 Your job: turn a request into a grounded, executable Plan (not code).
 
 Rules:
-- Ground first: use read_file / list_dir / search_code to see what already
-  exists before deciding what to build. Never assume file contents.
+- You may be given retrieved memory up front: a "Project Conventions" section
+  (durable decisions/norms for this repo — treat as authoritative and follow
+  them) and a "Previous Attempts" section (relevant past runs — learn from
+  failures and don't repeat them). This memory does NOT include code.
+- Ground first: use `retrieve` to find relevant existing code and symbols in the
+  indexed codebase, and read_file / list_dir / search_code to inspect specifics,
+  before deciding what to build. If a helper/rule already exists, plan to reuse
+  it rather than rebuild it. Never assume file contents.
 - Prefer reasonable defaults over questions: when something is ambiguous but a
   sensible default exists, record it as an assumption and proceed.
 - Only use open_questions for genuinely blocking ambiguity (e.g. contradictory
@@ -36,7 +43,10 @@ Rules:
 - When you have gathered enough context, stop calling tools and emit the Plan.
 """
 
-_EMIT_INSTRUCTION = "You have enough context. Emit the final Plan now."
+_EMIT_INSTRUCTION = (
+    "You have enough context. Emit the final Plan now. Each task's `kind` must be "
+    "exactly one of: create, modify, test, docs, fix (not a tool name)."
+)
 
 
 class Planner:
@@ -56,7 +66,17 @@ class Planner:
         ctx: ToolContext,
         prior_plan: Plan | None = None,
         clarification_answers: list[str] | None = None,
+        on_tool_result: ToolResultHook | None = None,
+        grounding_context: str | None = None,
     ) -> Plan:
+        """``on_tool_result`` (Task 3.12) is per-call, not per-instance: the Planner
+        is built once and reused across every ``plan`` node invocation in a run, so
+        a per-instance hook would leak state across calls — the caller supplies a
+        fresh observer (e.g. a fresh ``RetrievalCapture``) each time instead.
+
+        ``grounding_context`` (Task 3.13) is the pre-fetched memory block
+        (conventions + previous attempts) the plan node injects; empty/None means
+        the planner behaves exactly as it did before memory was wired in."""
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=_SYSTEM_PROMPT),
             ChatMessage(
@@ -64,6 +84,16 @@ class Planner:
                 content=_render_request(user_request, prior_plan, clarification_answers),
             ),
         ]
+        if grounding_context:
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "Retrieved memory for grounding (reference — may be incomplete; "
+                        "use `retrieve` for code):\n\n" + grounding_context
+                    ),
+                )
+            )
         tool_specs = self._registry.specs()
 
         for _ in range(self._settings.planner.grounding_steps):
@@ -77,6 +107,8 @@ class Planner:
             )
             for call in calls:
                 result = execute_tool(self._registry, call.name, call.arguments, ctx, self._policy)
+                if on_tool_result is not None:
+                    on_tool_result(call.name, result)
                 observation = result.output if result.ok else f"ERROR: {result.error}"
                 messages.append(
                     ChatMessage(

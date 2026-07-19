@@ -28,7 +28,7 @@ on replay. See the Phase 2 completion report for the full discussion.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langgraph.types import interrupt
 
@@ -36,6 +36,7 @@ from app.agents.coder import Coder, CoderTask, workspace_signature
 from app.core.clock import now_iso
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.graph.retrieval import RetrievalCapture
 from app.graph.state import AgentState, ErrorRecord, FileRef, HITLRequest, Task
 from app.providers.base import LLMProvider
 from app.tools.authorization import truncate_output
@@ -43,6 +44,9 @@ from app.tools.base import ToolContext, ToolRegistry
 from app.tools.git import Git
 from app.tools.sandbox import Sandbox
 from app.workspace.lifecycle import Workspace
+
+if TYPE_CHECKING:
+    from app.rag.retriever import Retriever
 
 log = get_logger("graph.nodes.coder")
 
@@ -106,7 +110,11 @@ def _file_refs_since(git: Git, base_commit: str) -> list[FileRef]:
 
 
 def make_coder_node(
-    provider: LLMProvider, registry: ToolRegistry, settings: Settings, sandbox: Sandbox
+    provider: LLMProvider,
+    registry: ToolRegistry,
+    settings: Settings,
+    sandbox: Sandbox,
+    retriever: Retriever | None = None,
 ) -> Any:
     def _node(state: AgentState) -> dict[str, Any]:
         plan = state.get("plan")
@@ -138,8 +146,11 @@ def make_coder_node(
             run_id=state["run_id"],
             sandbox=sandbox,
             workspace=workspace,
+            retriever=retriever,
+            project_id=state["project_id"],
         )
         autonomy = state["autonomy_level"]
+        capture = RetrievalCapture()
 
         def approve(tool_name: str, args: dict[str, Any]) -> bool:
             request = HITLRequest(
@@ -154,6 +165,7 @@ def make_coder_node(
         coder = Coder(
             provider, registry, settings, autonomy=autonomy,
             approve=approve if autonomy != "auto" else None,
+            on_tool_result=capture.observe,
         )
 
         coder_task = _to_coder_task(task) if task is not None else fix_task
@@ -174,6 +186,7 @@ def make_coder_node(
                 task.status = "done"
             patch = _commit_and_diff(workspace, state, label=task.id if task else "fix")
             patch["plan"] = plan
+            patch["retrieved_context"] = capture.chunks
             remaining = select_next_task(plan.tasks)
             patch["current_task_id"] = remaining.id if remaining else None
             patch["hitl_request"] = None
@@ -183,6 +196,7 @@ def make_coder_node(
             task.status = "failed"
         patch = _commit_and_diff(workspace, state, label=task.id if task else "fix")
         patch["plan"] = plan
+        patch["retrieved_context"] = capture.chunks
         patch["errors"] = [
             ErrorRecord(node="coder", kind=outcome.status, message=outcome.summary, ts=now_iso())
         ]

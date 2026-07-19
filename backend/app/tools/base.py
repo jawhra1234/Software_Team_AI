@@ -23,6 +23,7 @@ from app.providers.base import ToolSpec
 if TYPE_CHECKING:
     from app.agents.budget import BudgetTracker
     from app.core.tracing import Tracer
+    from app.rag.retriever import Retriever
     from app.tools.sandbox import Sandbox
     from app.workspace.lifecycle import Workspace
 
@@ -66,6 +67,9 @@ class ToolContext:
     workspace: Workspace | None = None
     tracer: Tracer | None = None
     budget: BudgetTracker | None = None
+    #: Retriever + project id for RAG-backed tools (Phase 3); None until indexed.
+    retriever: Retriever | None = None
+    project_id: str | None = None
 
 
 class Tool(ABC, Generic[TArgs]):

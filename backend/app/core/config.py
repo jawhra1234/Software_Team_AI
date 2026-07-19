@@ -200,6 +200,18 @@ class PlannerSettings(BaseModel):
     #: Max read-only tool-call rounds before forcing a plan emission.
     grounding_steps: int = 6
 
+    # Memory context injected into planning (Task 3.13). All bounded so the
+    # auto-injected block can't blow the token budget; repo code is NOT
+    # preloaded here (it stays on-demand via the `retrieve` tool).
+    #: Long-term (semantic) conventions/decisions fetched per plan.
+    memory_long_term_k: int = 5
+    #: Past runs surfaced as "Previous Attempts" per plan.
+    memory_episodic_k: int = 3
+    #: Recent-run window re-ranked by relevance before taking the top-k.
+    memory_episodic_candidate_window: int = 50
+    #: Hard char cap per injected section (keeps token usage bounded).
+    memory_max_section_chars: int = 1200
+
 
 class CheckpointerSettings(BaseModel):
     """LangGraph checkpointer backend (Task 2.11, ADR-0010)."""
@@ -228,6 +240,21 @@ class GraphSettings(BaseModel):
     max_run_tokens: int | None = None
 
 
+class RagSettings(BaseModel):
+    """Repository indexing + hybrid retrieval (Task 3.x, ADR-0008/0010)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: nomic-embed-text output dimension (ADR-0004); update if the embed model changes.
+    embedding_dim: int = 768
+    #: Chunks returned to plan/coder per retrieve() call.
+    top_k: int = 6
+    #: Candidate pool per arm (vector, keyword) before RRF fusion.
+    candidate_k: int = 20
+    rrf_k: int = 60
+    embed_batch_size: int = 32
+
+
 class Settings(BaseSettings):
     """Root application settings."""
 
@@ -254,6 +281,7 @@ class Settings(BaseSettings):
     planner: PlannerSettings = Field(default_factory=PlannerSettings)
     checkpointer: CheckpointerSettings = Field(default_factory=CheckpointerSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
+    rag: RagSettings = Field(default_factory=RagSettings)
 
 
 @lru_cache

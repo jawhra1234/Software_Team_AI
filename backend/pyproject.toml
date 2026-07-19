@@ -16,6 +16,10 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2.0",
     "langgraph-checkpoint-postgres>=2.0",
     "psycopg[binary,pool]>=3.1",
+    "pgvector>=0.3",
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
+    "rank-bm25>=0.2.2",
 ]
 
 [project.optional-dependencies]
@@ -79,7 +83,22 @@ warn_required_dynamic_aliases = true
 
 # Third-party libraries without bundled type stubs.
 [[tool.mypy.overrides]]
-module = ["ollama.*", "langfuse.*"]
+module = [
+    "ollama.*",
+    "langfuse.*",
+    "tree_sitter.*",
+    "tree_sitter_language_pack.*",
+    "rank_bm25.*",
+    "pgvector.*",
+]
+ignore_missing_imports = true
+
+# numpy (transitive via rank-bm25) ships 3.12-syntax stubs that mypy can't parse
+# under python_version=3.11; skip following into it. We never use numpy directly.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
