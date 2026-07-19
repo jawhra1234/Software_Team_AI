@@ -23,14 +23,21 @@ Two different "flows" matter here, and it's easy to conflate them: the **runtime
 is what happens *inside a single run* (right now, at any point in the project); the
 **phase flow** is the *order the system itself was built in*. Both are below.
 
-### Runtime flow — what happens inside one run (built in Phase 2)
+### Runtime flow — what happens inside one run (Phase 2 graph + Phase 3 grounding)
 
 ```
+  ┌───────────────────── shared knowledge · Postgres + pgvector ──────────────────────┐
+  │  Code index — hybrid RAG (vector + BM25 → RRF)                                     │
+  │  Long-term memory — durable conventions & decisions (semantic)                    │
+  │  Episodic memory — outcomes of past runs (relational)                             │
+  └───────────────────────────────────────────────────────────────────────────────────┘
+     ▲ read code · `retrieve` (PLAN + CODER)   ▲ read memory (PLAN)   ▼ write outcome (FINALIZE)
+
   user request
        │
        ▼
-  ┌─────────────┐
-  │    PLAN     │  ground in the real repo (read-only tools) → draft a Plan
+  ┌─────────────┐  ① inject Project Conventions + Previous Attempts (memory),
+  │    PLAN     │  ② ground in real code via `retrieve` → draft a Plan
   └──────┬──────┘  blocking question → pause and ask the human directly
          │
          ▼  (semi/manual autonomy: needs approval)
@@ -38,10 +45,9 @@ is what happens *inside a single run* (right now, at any point in the project); 
   │ HUMAN_GATE  │  approve → continue │ revise → back to PLAN │ abort → FINALIZE
   └──────┬──────┘
          ▼
-  ┌─────────────┐
-  │    CODER    │◀── loops here until every task is done
-  │             │     (or, in "fix mode", until verify/review's specific
-  │             │      feedback is addressed)
+  ┌─────────────┐◀── loops here until every task is done (or, in "fix mode",
+  │    CODER    │    until verify/review's specific feedback is addressed) ·
+  │             │    grounds in real code via `retrieve` on demand
   └──────┬──────┘  commits to git each step; may pause to ask approval
          │          before running a shell command
          ▼  (all tasks done)
@@ -56,12 +62,17 @@ is what happens *inside a single run* (right now, at any point in the project); 
          ▼  (approved)
   ┌─────────────┐
   │  FINALIZE   │  diff summary + final status (succeeded/failed/cancelled)
-  └─────────────┘
+  └─────────────┘  → writes the run outcome to episodic memory
 
   At any point, any node can instead escalate to HUMAN_GATE — budget
   exhausted, retries used up, or a command needs approval — and the human
   can retry, accept the current state as-is, or abort the run.
 ```
+
+The **shared knowledge** layer (top) is Phase 3: `PLAN` and `CODER` read real code on
+demand through the `retrieve` tool; `PLAN` also gets durable **memory** injected before it
+drafts; and `FINALIZE` records the run's outcome back to episodic memory so future runs can
+learn from it. Everything else is the Phase-2 orchestration.
 
 - **`plan`** — before drafting, it's automatically handed relevant **memory** (durable
   decisions/conventions + how earlier runs on this project went); it then grounds in the
@@ -70,13 +81,14 @@ is what happens *inside a single run* (right now, at any point in the project); 
 - **`human_gate`** — the *one* place a human is asked anything: approve the plan, resolve
   an escalation, or sign off on the final result. What it asks for depends on the
   **autonomy level** (`auto` / `semi` / `manual`).
-- **`coder`** — does the actual work, one task at a time, inside a sandbox. If verify or
-  review comes back with a problem, it re-enters in "fix mode" targeting that specific
-  feedback instead of redoing everything.
+- **`coder`** — does the actual work, one task at a time, inside a sandbox, grounding in
+  real code on demand via `retrieve`. If verify or review comes back with a problem, it
+  re-enters in "fix mode" targeting that specific feedback instead of redoing everything.
 - **`verify`** — no LLM involved. Runs the project's real tests/build and reports pass/fail.
 - **`review`** — approves or requests changes to the diff (today a simple rule; Phase 4
   swaps this for a real second-opinion reviewer).
-- **`finalize`** — closes the run out with a diff summary and a final status.
+- **`finalize`** — closes the run out with a diff summary and a final status, and records the
+  run's outcome to episodic memory.
 
 ### Phase flow — how the project itself was built
 
