@@ -24,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.planner import Planner
+from app.agents.reviewer import Reviewer
 from app.core.config import Settings
 from app.graph import routing
 from app.graph.events import EventSink, NullEventSink
@@ -32,7 +33,7 @@ from app.graph.nodes.coder import make_coder_node
 from app.graph.nodes.finalize import make_finalize_node
 from app.graph.nodes.human_gate import make_human_gate_node
 from app.graph.nodes.plan import make_plan_node
-from app.graph.nodes.review_stub import make_review_node
+from app.graph.nodes.review import make_review_node
 from app.graph.nodes.verify import make_verify_node
 from app.graph.state import AgentState
 from app.memory.episodic import EpisodicMemory
@@ -54,15 +55,16 @@ def build_graph(
     sink: EventSink | None = None,
     planner_provider: LLMProvider | None = None,
     coder_provider: LLMProvider | None = None,
+    reviewer_provider: LLMProvider | None = None,
     retriever: Retriever | None = None,
     episodic: EpisodicMemory | None = None,
     long_term: LongTermMemory | None = None,
 ) -> _CompiledGraph:
     """Assemble and compile the orchestration graph.
 
-    ``planner_provider``/``coder_provider`` override what would otherwise be
-    resolved from ``settings`` — the same dependency-injection seam as
-    ``sandbox``/``checkpointer``, used by tests to inject scripted providers.
+    ``planner_provider``/``coder_provider``/``reviewer_provider`` override what
+    would otherwise be resolved from ``settings`` — the same dependency-injection
+    seam as ``sandbox``/``checkpointer``, used by tests to inject scripted providers.
 
     ``retriever``/``episodic``/``long_term`` are opt-in and default to ``None``
     (RAG + both memory reads silently degrade to no-ops in that case — see
@@ -81,6 +83,11 @@ def build_graph(
     )
     coder_provider = coder_provider or get_provider("coder", settings)
     coder_registry = build_default_registry()
+    # The reviewer's grounding is read-only (ADR-0006), so it reuses the planner's
+    # tool set: retrieve/read_file/list_dir/search_code — never write_file/edit_file.
+    reviewer = Reviewer(
+        reviewer_provider or get_provider("reviewer", settings), build_planner_registry(), settings
+    )
 
     # mypy's overload resolution for `add_node` doesn't structurally match our
     # plain `Callable[[AgentState], dict[str, Any]]` node functions against
@@ -113,7 +120,8 @@ def build_graph(
         instrument_node("verify", make_verify_node(sandbox, settings.graph, settings.coder), sink),
     )
     graph.add_node(  # type: ignore[call-overload]
-        "review", instrument_node("review", make_review_node(settings.graph), sink)
+        "review",
+        instrument_node("review", make_review_node(reviewer, settings.graph, retriever), sink),
     )
     graph.add_node(  # type: ignore[call-overload]
         "finalize",

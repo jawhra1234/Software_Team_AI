@@ -18,4 +18,6 @@ from app.rag.factory import build_rag_stack
 _settings = get_settings()
 _rag = build_rag_stack(_settings)
 
-graph = build_graph(_settings, retriever=_rag.retriever, episodic=_rag.episodic)
+graph = build_graph(
+    _settings, retriever=_rag.retriever, episodic=_rag.episodic, long_term=_rag.long_term
+)

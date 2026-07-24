@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from app.core.clock import now_iso
-from app.core.config import GraphSettings, PlannerSettings, Settings
+from app.core.config import GraphSettings, PlannerSettings, ReviewerSettings, Settings
 from app.graph.build_graph import build_graph
 from app.graph.checkpointer import build_checkpointer
-from app.graph.state import Budget, new_run_state
+from app.graph.state import Budget, Review, new_run_state
 from app.providers.base import Capabilities, ChatResponse, ToolCall
 from app.providers.structured import emit_tool_name
 from app.tools.git import Git
@@ -79,10 +79,24 @@ def _planner_provider(*plans: dict[str, Any]) -> FakeProvider:
     return FakeProvider(capabilities=_CAPS, responses=[_emit_plan(p) for p in plans])
 
 
+def _emit_review(payload: dict[str, Any]) -> ChatResponse:
+    return ChatResponse(
+        content="", tool_calls=[ToolCall(id="rv", name=emit_tool_name(Review), arguments=payload)]
+    )
+
+
+def _approving_reviewer(n: int = 1) -> FakeProvider:
+    """A reviewer that approves every time it's called (grounding_steps=0, so one
+    scripted response per review-node visit is enough)."""
+    payload = {"verdict": "approved", "issues": [], "summary": "looks correct"}
+    return FakeProvider(capabilities=_CAPS, responses=[_emit_review(payload) for _ in range(n)])
+
+
 def _settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,
         planner=PlannerSettings(grounding_steps=0),
+        reviewer=ReviewerSettings(grounding_steps=0),
         **overrides,
     )
 
@@ -137,6 +151,7 @@ def test_happy_path_auto_autonomy_no_interrupts(tmp_path: Path) -> None:
         checkpointer=InMemorySaver(),
         planner_provider=_planner_provider(_GOOD_PLAN),
         coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+        reviewer_provider=_approving_reviewer(),
     )
     config = {"configurable": {"thread_id": "happy"}}
     result = graph.invoke(_init_state(tmp_path, "auto"), config=config)  # type: ignore[call-overload]
@@ -159,6 +174,7 @@ def test_plan_approval_interrupt_then_approve(tmp_path: Path) -> None:
         checkpointer=InMemorySaver(),
         planner_provider=_planner_provider(_GOOD_PLAN),
         coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+        reviewer_provider=_approving_reviewer(),
     )
     config = {"configurable": {"thread_id": "approve"}}
     paused = graph.invoke(_init_state(tmp_path, "semi"), config=config)  # type: ignore[call-overload]
@@ -198,6 +214,7 @@ def test_plan_revise_loop_replans_then_approves(tmp_path: Path) -> None:
         # 2 plan-node visits (initial + after "revise") -> 2 queued plan emissions.
         planner_provider=_planner_provider(_GOOD_PLAN, _GOOD_PLAN),
         coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+        reviewer_provider=_approving_reviewer(),
     )
     config = {"configurable": {"thread_id": "revise"}}
     graph.invoke(_init_state(tmp_path, "semi"), config=config)  # type: ignore[call-overload]
@@ -226,6 +243,7 @@ def test_verify_fail_triggers_fix_then_passes(tmp_path: Path) -> None:
             capabilities=_CAPS,
             responses=[_WRITE_BUGGY, _FINISH, _FIX_CODE, _FINISH],
         ),
+        reviewer_provider=_approving_reviewer(),
     )
     config = {"configurable": {"thread_id": "fix"}}
     result = graph.invoke(_init_state(tmp_path, "auto"), config=config)  # type: ignore[call-overload]
@@ -265,6 +283,7 @@ def test_autonomy_manual_adds_final_accept_gate(tmp_path: Path) -> None:
         checkpointer=InMemorySaver(),
         planner_provider=_planner_provider(_GOOD_PLAN),
         coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+        reviewer_provider=_approving_reviewer(),
     )
     config = {"configurable": {"thread_id": "manual"}}
     plan_gate = graph.invoke(_init_state(tmp_path, "manual"), config=config)  # type: ignore[call-overload]
@@ -290,6 +309,7 @@ def test_autonomy_auto_has_zero_gates_on_happy_path(tmp_path: Path) -> None:
         checkpointer=InMemorySaver(),
         planner_provider=_planner_provider(_GOOD_PLAN),
         coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+        reviewer_provider=_approving_reviewer(),
     )
     result = graph.invoke(  # type: ignore[call-overload]
         _init_state(tmp_path, "auto"), config={"configurable": {"thread_id": "auto-matrix"}}
@@ -359,6 +379,7 @@ def test_checkpoint_recovery_across_simulated_restart(tmp_path: Path) -> None:
             checkpointer=cp2,
             planner_provider=_planner_provider(_GOOD_PLAN),  # unused: plan already completed
             coder_provider=FakeProvider(capabilities=_CAPS, responses=[_WRITE_PASSING, _FINISH]),
+            reviewer_provider=_approving_reviewer(),
         )
         state = graph2.get_state(config)  # type: ignore[arg-type]
         assert state.values["plan"].summary == "Add a calculator."  # survived the "restart"

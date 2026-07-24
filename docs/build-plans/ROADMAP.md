@@ -8,7 +8,7 @@ Sequenced to kill risk early and minimize technical debt: build the riskiest cor
 | **1 — Core Coder loop** ⭐ | Tools + sandbox + git workspace + coder ReAct loop + deterministic verify | [PHASE-1.md](PHASE-1.md) | Specced |
 | **2 — LangGraph orchestration + HITL** | `plan→human_gate→coder→verify→review→finalize` graph, Postgres checkpointer, plan-approval interrupt, State schema | [PHASE-2.md](PHASE-2.md) | Specced |
 | **3 — Grounding: RAG + memory** | tree-sitter symbol index, hybrid BM25+vector retrieval, `retrieve` tool, long-term memory | [PHASE-3.md](PHASE-3.md) | Specced |
-| **4 — Adversarial reviewer + iteration** | Fresh-context reviewer, fix-loop on verify/review failures | _to be written_ | Planned |
+| **4 — Autonomous Review & Self-Correction** | Fresh-context reviewer (diff+plan+verify only, read-only grounding), targeted fix-loop bounded + escalating | [PHASE-4.md](PHASE-4.md) | Specced |
 | **5 — Eval harness** ⭐ | Internal SWE-bench-lite-style task suite, metrics, Langfuse dashboards, regression tracking | _to be written_ | Planned |
 | **6 — Mission-control UI** | Next.js: live graph, streaming, diff viewer, HITL cards, timeline | _to be written_ | Planned |
 | **7 — Cloud & scale** | Hosted provider swap, task queue, auth, deploy, horizontal-ready | _to be written_ | Planned |

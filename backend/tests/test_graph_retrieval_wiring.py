@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 from app.core.clock import now_iso
-from app.core.config import PlannerSettings, Settings
+from app.core.config import PlannerSettings, ReviewerSettings, Settings
 from app.graph.build_graph import build_graph
-from app.graph.state import Plan, new_run_state
+from app.graph.state import Plan, Review, new_run_state
 from app.providers.base import Capabilities, ChatResponse, ToolCall
 from app.providers.structured import emit_tool_name
 from app.rag.embeddings import ChunkEmbedder
@@ -58,6 +58,19 @@ def _emit_plan(payload: dict[str, object]) -> ChatResponse:
     )
 
 
+def _approving_reviewer() -> FakeProvider:
+    payload = {"verdict": "approved", "issues": [], "summary": "looks correct"}
+    return FakeProvider(
+        capabilities=_CAPS,
+        responses=[
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="rv", name=emit_tool_name(Review), arguments=payload)],
+            )
+        ],
+    )
+
+
 def _sandbox() -> SubprocessSandbox:
     return SubprocessSandbox(Settings(_env_file=None).sandbox.model_copy(update={"backend": "subprocess"}))
 
@@ -79,7 +92,11 @@ def test_coder_retrieve_call_populates_retrieved_context(tmp_path: Path) -> None
     Indexer(store, embedder).index_project(project_id, repo)
     retriever = Retriever(store, embedder)
 
-    settings = Settings(_env_file=None, planner=PlannerSettings(grounding_steps=0))
+    settings = Settings(
+        _env_file=None,
+        planner=PlannerSettings(grounding_steps=0),
+        reviewer=ReviewerSettings(grounding_steps=0),
+    )
     graph = build_graph(
         settings,
         sandbox=_sandbox(),
@@ -96,8 +113,6 @@ def test_coder_retrieve_call_populates_retrieved_context(tmp_path: Path) -> None
             capabilities=_CAPS,
             responses=[
                 _tool_call("retrieve", query="add"),
-                # Must actually change a file, or review_stub sees an empty diff
-                # and requests changes (fix-mode) instead of approving.
                 _tool_call(
                     "write_file", path="main.py",
                     content="from calc import add\n\nprint(add(2, 3))\n",
@@ -105,6 +120,7 @@ def test_coder_retrieve_call_populates_retrieved_context(tmp_path: Path) -> None
                 _tool_call("finish_task", summary="used add() via retrieval"),
             ],
         ),
+        reviewer_provider=_approving_reviewer(),
     )
 
     state = dict(new_run_state(
@@ -114,13 +130,22 @@ def test_coder_retrieve_call_populates_retrieved_context(tmp_path: Path) -> None
     ))
     state["base_commit"] = base
     state["work_branch"] = git.current_branch()
+    config = {"configurable": {"thread_id": "t1"}}
 
-    result = graph.invoke(state, config={"configurable": {"thread_id": "t1"}})  # type: ignore[call-overload]
+    # `retrieved_context` is ephemeral/overwritten-per-step (Task 3.12): every node
+    # that can retrieve (plan/coder/review) replaces it with its own step's chunks,
+    # so a later node's empty capture can clobber an earlier one's in the *final*
+    # state. Capture the coder step's own patch via the stream instead of relying
+    # on graph.invoke()'s terminal-state-only view, to test what this file is
+    # actually about — the coder's retrieve() call populating the field.
+    coder_retrieved_context = None
+    for chunk in graph.stream(state, config=config, stream_mode="updates"):  # type: ignore[call-overload]
+        if "coder" in chunk:
+            coder_retrieved_context = chunk["coder"].get("retrieved_context")
 
-    assert result["status"] == "succeeded"
-    retrieved = result["retrieved_context"]
-    assert retrieved  # the coder's retrieve() call populated this
-    assert any(c.symbol == "add" for c in retrieved)
+    assert graph.get_state(config).values["status"] == "succeeded"  # type: ignore[arg-type]
+    assert coder_retrieved_context  # the coder's retrieve() call populated this
+    assert any(c.symbol == "add" for c in coder_retrieved_context)
 
 
 @pytest.mark.skipif(_SKIP, reason="local Postgres not reachable")
@@ -131,7 +156,11 @@ def test_plan_without_retrieve_call_has_empty_retrieved_context(tmp_path: Path) 
     git.init()
     base = git.commit("init")
 
-    settings = Settings(_env_file=None, planner=PlannerSettings(grounding_steps=0))
+    settings = Settings(
+        _env_file=None,
+        planner=PlannerSettings(grounding_steps=0),
+        reviewer=ReviewerSettings(grounding_steps=0),
+    )
     graph = build_graph(
         settings,
         sandbox=_sandbox(),

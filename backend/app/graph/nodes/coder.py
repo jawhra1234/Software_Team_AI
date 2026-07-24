@@ -80,11 +80,16 @@ def build_fix_task(state: AgentState) -> CoderTask | None:
         )
     review = state.get("review")
     if review is not None and review.verdict == "changes_requested":
+        # Targeted hand-off (Task 4.4, ADR-0006): only blocker/major issues are
+        # actionable findings — minor/nit are advisory only (still visible in
+        # `review.issues`/`summary` in state for tracing) and must not be handed
+        # to the coder as work items, so a fix cycle can't be triggered by nits.
+        blocking = [i for i in review.issues if i.severity in ("blocker", "major")]
         details = "\n".join(
             f"- [{i.severity}] {i.description}" + (f" ({i.file})" if i.file else "")
-            for i in review.issues
+            for i in blocking
         )
-        criteria = [i.description for i in review.issues] or ["address review feedback"]
+        criteria = [i.description for i in blocking] or ["address review feedback"]
         return CoderTask(
             description=f"Address the reviewer's requested changes.\n{review.summary}\n{details}",
             acceptance_criteria=criteria,

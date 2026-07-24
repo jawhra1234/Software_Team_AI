@@ -1,4 +1,9 @@
-"""Tasks 2.4/2.5/2.6 — verify, review-stub, finalize nodes (no LLM, hermetic)."""
+"""Tasks 2.4/2.6 — verify, finalize nodes (no LLM, hermetic).
+
+The review node (Task 2.5's stub, replaced by the real reviewer in Phase 4) is
+LLM-backed as of Phase 4 and has its own hermetic suite driven by a
+``FakeProvider``: see ``test_graph_nodes_review.py``.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,8 @@ from pathlib import Path
 from app.core.clock import now_iso
 from app.core.config import CoderSettings, GraphSettings, Settings
 from app.graph.nodes.finalize import make_finalize_node
-from app.graph.nodes.review_stub import make_review_node
 from app.graph.nodes.verify import make_verify_node
-from app.graph.state import FileRef, new_run_state
+from app.graph.state import new_run_state
 from app.tools.git import Git
 from app.tools.sandbox import SubprocessSandbox
 
@@ -77,55 +81,6 @@ def test_verify_node_escalates_when_retries_exhausted(tmp_path: Path) -> None:
     assert patch["retries"] == {"verify": 1}
     assert patch["hitl_request"] is not None
     assert patch["hitl_request"].kind == "escalation"
-
-
-# ---------------------------------------------------------------------------
-# review-stub node (2.5)
-# ---------------------------------------------------------------------------
-def test_review_stub_approves_when_files_changed(tmp_path: Path) -> None:
-    node = make_review_node(GraphSettings())
-    state = _base_state(tmp_path, changed_files=[FileRef(path="a.py", status="modified")])
-    patch = node(state)
-    assert patch["review"].verdict == "approved"
-    assert patch["hitl_request"] is None
-
-
-def test_review_stub_requests_changes_when_nothing_changed(tmp_path: Path) -> None:
-    node = make_review_node(GraphSettings(max_review_cycles=3))
-    patch = node(_base_state(tmp_path, changed_files=[], retries={"review": 0}))
-    assert patch["review"].verdict == "changes_requested"
-    assert patch["retries"] == {"review": 1}
-    assert patch["hitl_request"] is None
-
-
-def test_review_stub_escalates_when_cycles_exhausted(tmp_path: Path) -> None:
-    node = make_review_node(GraphSettings(max_review_cycles=1))
-    patch = node(_base_state(tmp_path, changed_files=[], retries={"review": 0}))
-    assert patch["hitl_request"] is not None
-    assert patch["hitl_request"].payload["origin_node"] == "coder"
-
-
-def test_review_stub_final_accept_gate_in_manual_autonomy(tmp_path: Path) -> None:
-    node = make_review_node(GraphSettings())
-    state = _base_state(
-        tmp_path, changed_files=[FileRef(path="a.py", status="modified")], autonomy_level="manual"
-    )
-    patch = node(state)
-    assert patch["review"].verdict == "approved"
-    assert patch["hitl_request"] is not None
-    assert patch["hitl_request"].kind == "final_accept"
-
-
-def test_review_stub_no_final_accept_gate_outside_manual(tmp_path: Path) -> None:
-    node = make_review_node(GraphSettings())
-    for autonomy in ("auto", "semi"):
-        state = _base_state(
-            tmp_path,
-            changed_files=[FileRef(path="a.py", status="modified")],
-            autonomy_level=autonomy,
-        )
-        patch = node(state)
-        assert patch["hitl_request"] is None
 
 
 # ---------------------------------------------------------------------------

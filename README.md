@@ -11,9 +11,9 @@ tool boundaries, context isolation, and verification — not by human job titles
 [`docs/adr/`](docs/adr/) for the full design and rationale.
 
 > **Status:** Phase 0 (Foundations), Phase 1 (Core coder loop), Phase 2 (LangGraph
-> orchestration + HITL), and Phase 3 (Repository indexing, hybrid RAG, and memory) are
-> complete and verified. Phases 4–7 are specced in
-> [`docs/build-plans/`](docs/build-plans/) and not yet implemented.
+> orchestration + HITL), Phase 3 (Repository indexing, hybrid RAG, and memory), and
+> Phase 4 (Autonomous review & self-correction) are complete and verified. Phases 5–7
+> are specced in [`docs/build-plans/`](docs/build-plans/) and not yet implemented.
 
 ---
 
@@ -23,7 +23,7 @@ Two different "flows" matter here, and it's easy to conflate them: the **runtime
 is what happens *inside a single run* (right now, at any point in the project); the
 **phase flow** is the *order the system itself was built in*. Both are below.
 
-### Runtime flow — what happens inside one run (Phase 2 graph + Phase 3 grounding)
+### Runtime flow — what happens inside one run (Phase 2 graph + Phase 3 grounding + Phase 4 review)
 
 ```
   ┌───────────────────── shared knowledge · Postgres + pgvector ──────────────────────┐
@@ -56,9 +56,9 @@ is what happens *inside a single run* (right now, at any point in the project); 
   └──────┬──────┘
          │  fails → back to CODER ("fix mode") │ passes ↓
          ▼
-  ┌─────────────┐
-  │   REVIEW    │  approve → continue │ changes_requested → back to CODER
-  └──────┬──────┘  (today: a simple rule; Phase 4 swaps in a real reviewer)
+  ┌─────────────┐  fresh-context LLM reviewer — sees ONLY plan + diff + verify
+  │   REVIEW    │  result (never coder's reasoning); blocker/major → fix cycle
+  └──────┬──────┘  (targeted, no re-plan) │ minor/nit → advisory, never blocks
          ▼  (approved)
   ┌─────────────┐
   │  FINALIZE   │  diff summary + final status (succeeded/failed/cancelled)
@@ -85,8 +85,11 @@ learn from it. Everything else is the Phase-2 orchestration.
   real code on demand via `retrieve`. If verify or review comes back with a problem, it
   re-enters in "fix mode" targeting that specific feedback instead of redoing everything.
 - **`verify`** — no LLM involved. Runs the project's real tests/build and reports pass/fail.
-- **`review`** — approves or requests changes to the diff (today a simple rule; Phase 4
-  swaps this for a real second-opinion reviewer).
+- **`review`** — a real, fresh-context reviewer (Phase 4, `ADR-0006`) with its own **isolated**
+  view: only the approved plan, the diff, and the verify result — never the coder's
+  reasoning. It grounds read-only (`retrieve`/`search_code`/`read_file`/`list_dir`), assigns
+  each finding a severity, and only `blocker`/`major` findings send the run back to the coder
+  with a **targeted** fix task (not a re-plan); `minor`/`nit` are advisory and never block.
 - **`finalize`** — closes the run out with a diff summary and a final status, and records the
   run's outcome to episodic memory.
 
@@ -94,7 +97,7 @@ learn from it. Everything else is the Phase-2 orchestration.
 
 ```
   0 ──▶ 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 5 ──▶ 6 ──▶ 7
-  ✅    ✅    ✅    ✅    📋    📋    📋    📋
+  ✅    ✅    ✅    ✅    ✅    📋    📋    📋
 ```
 
 | # | Phase | What it adds |
@@ -103,7 +106,7 @@ learn from it. Everything else is the Phase-2 orchestration.
 | 1 | Core Coder Loop | tools, sandbox, git-backed workspace, deterministic verify, budgets |
 | 2 | LangGraph + HITL | state graph, planner, the 6-node graph, dual checkpointers, interrupts |
 | 3 | RAG + Memory | repo symbol index, hybrid retrieval, long-term/episodic memory |
-| 4 | Real Reviewer | fresh-context adversarial review, replacing `review_stub` |
+| 4 | Autonomous Review & Self-Correction | fresh-context adversarial reviewer + bounded fix loop, replacing `review_stub` |
 | 5 | Eval Harness | internal task suite, quality metrics, regression tracking |
 | 6 | Mission-Control UI | Next.js: live graph, streaming, diff viewer, HITL cards |
 | 7 | Cloud + Scale | hosted providers, task queue, horizontal scale |
@@ -117,10 +120,11 @@ table can't show, so it's spelled out here:
   doesn't reinvent it, it wraps it in a graph node.
 - **Phase 2 → 3:** a working orchestrator that currently grounds `plan`/`coder` with
   ripgrep — Phase 3 upgrades that one seam to real hybrid RAG without touching the graph.
-- **Phase 3 → 4:** real retrieval + memory — Phase 4's reviewer uses it for context instead
-  of blindly trusting the diff.
-- **Phase 4 → 5:** a real quality signal (reviewer verdicts) — Phase 5 measures it against
-  a task suite so later changes can be judged "better" or "worse," not just "different."
+- **Phase 3 → 4:** real retrieval + memory — Phase 4's reviewer uses the same read-only
+  grounding tools for context instead of blindly trusting the diff text.
+- **Phase 4 → 5:** a real quality signal (reviewer verdicts, severities, cycle counts) —
+  Phase 5 measures it against a task suite so later changes can be judged "better" or
+  "worse," not just "different."
 - **Phase 5 → 6:** a measured, trustworthy core — only now does it make sense to build a UI
   on top of it.
 - **Phase 6 → 7:** a working local product — Phase 7 is what it takes to run it for more
@@ -141,15 +145,16 @@ Three deliberately separated sources of truth keep it honest and cheap on a 16 G
 | Retrievable knowledge (code chunks, memory) | Vector store + Postgres |
 
 The full graph — `plan · human_gate · coder · verify · review · finalize` — is
-implemented and compiled as a real LangGraph `StateGraph` (Phase 2), and its `plan`/`coder`
-grounding seam is now backed by **hybrid RAG over the real repository** plus **long-term and
-episodic memory** (Phase 3). Everything runs locally on **one primary Ollama model**
-(`qwen2.5-coder:7b`) with `nomic-embed-text` for embeddings, and a config-only path to swap
-in OpenRouter / Gemini / Groq / OpenAI later.
+implemented and compiled as a real LangGraph `StateGraph` (Phase 2), its `plan`/`coder`
+grounding seam is backed by **hybrid RAG over the real repository** plus **long-term and
+episodic memory** (Phase 3), and `review` is a real **fresh-context adversarial reviewer**
+driving a bounded self-correction loop (Phase 4) — all three roles running on **one primary
+Ollama model** (`qwen2.5-coder:7b`) with `nomic-embed-text` for embeddings, and a config-only
+path to swap in OpenRouter / Gemini / Groq / OpenAI later.
 
 ---
 
-## What's implemented (Phases 0–3)
+## What's implemented (Phases 0–4)
 
 ### Phase 0 — Foundations
 - **Config** (`app/core/config.py`): `pydantic-settings` with a per-role model block
@@ -212,10 +217,11 @@ the independent verify runner.
   from failing verify/review feedback; commits at task boundaries; derives
   `changed_files` from git.
 - **Verify & review-stub nodes**: `verify` (`app/graph/nodes/verify.py`) is the same
-  deterministic runner from Phase 1, now wired with retry-then-escalate logic;
-  `review_stub` (`app/graph/nodes/review_stub.py`) is a rule-based placeholder (approves
-  when files changed) that exercises both routing branches ahead of the real adversarial
-  reviewer in Phase 4.
+  deterministic runner from Phase 1, now wired with retry-then-escalate logic; `review_stub`
+  was a rule-based placeholder (approved whenever files changed) that exercised both routing
+  branches ahead of the real adversarial reviewer — **replaced in Phase 4** by
+  `app/graph/nodes/review.py` (see below); the node's contract (reads diff+plan+verify,
+  writes `review`) was preserved exactly, so no graph/routing changes were needed.
 - **Human-in-the-loop** (`app/graph/nodes/human_gate.py`): one multiplexed node handling
   `plan_approval`, `escalation`, and `final_accept`, plus a direct in-tool interrupt for
   `command_approval` before `run_command` — gated by three autonomy levels (`manual` /
@@ -354,6 +360,116 @@ architecture as the hard task; only the task difficulty (not the design) decides
 Validation harnesses: `scripts/rag_validate.py` (`part1` retrieval, `abtest` RAG off/on) and
 `scripts/memory_e2e.py` (cross-run memory; `simple` for the green happy path).
 
+### Phase 4 — Autonomous review & self-correction
+
+This phase replaces the Phase-2 `review_stub` (a rule that approved whenever files changed)
+with a real, fresh-context adversarial reviewer (`ADR-0006`) and turns the existing
+`review → coder(fix) → verify → review` loop into a genuine, bounded self-correction cycle —
+**without changing the graph's topology or any node's contract**. The reviewer is the third
+and last real LLM role in the "3 roles + deterministic verify" design (see *Why this design*
+above); it plugs into the same seam the stub occupied.
+
+- **Reviewer agent** (`app/agents/reviewer.py`): shaped exactly like the planner — a bounded,
+  **read-only** grounding loop (`retrieve` / `search_code` / `read_file` / `list_dir` — never
+  `write_file`/`edit_file`/`run_command`) followed by a `structured_call` that emits a
+  `Review`. Its system prompt states five judging priorities in order — **correctness,
+  security, test gaps, architecture (incl. duplicated logic elsewhere in the repo),
+  maintainability** — and is explicit that style/formatting/naming are *never* blockers.
+- **Isolation is structural, not a convention** (`app/graph/nodes/review.py`): the reviewer's
+  input is built from exactly three sources — the approved `Plan`, the diff
+  (`state["diff_summary"]`, already head/tail-truncated by the coder), and the `VerifyResult`
+  — and the code path never reads `state["coder_scratch"]`. This isn't a prompt instruction
+  the model could ignore; the node simply never has access to the coder's reasoning to leak.
+- **The verdict is not trusted blindly.** A small model can say "approved" while listing a
+  blocker, or "changes_requested" over a pure nit. The node **deterministically overrides**
+  the effective verdict from the issues' own severities: any `blocker`/`major` forces
+  `changes_requested` regardless of the model's claim; otherwise (no blocker/major) it's
+  `approved` — so "only blocker/major trigger another cycle" is a property of the code, not
+  a hope about model compliance. `rejected` (the approach is fundamentally wrong) and a
+  malformed/unparseable review both escalate to a human rather than looping or silently
+  approving.
+- **Targeted fix hand-off** (`app/graph/nodes/coder.py`'s `build_fix_task`): when changes are
+  requested, the coder's fix task is built **only from the blocker/major issues** (file, what's
+  wrong, the reviewer's suggestion) — never a re-plan, and never diluted by minor/nit noise,
+  which stay visible in `review.issues`/`summary` for tracing but are advisory-only.
+  A fix always re-enters `verify` before the next `review`, so a fix that breaks the tests is
+  caught, not rubber-stamped.
+- **Bounded and observable**: the same cycle cap the stub already had (`GRAPH__MAX_REVIEW_CYCLES`,
+  default 2) still governs the loop; every cycle logs `review_produced` (verdict + issue
+  count) and, when the node overrides a mistaken verdict, `review_verdict_overridden` — so
+  the whole review/fix history of a run is inspectable, not just its final outcome.
+
+**Verified (hermetic, 16 tests, `test_reviewer.py` + `test_graph_nodes_review.py`):** bounded
+grounding and structured emission (mirroring the planner's own test suite); the severity
+override in both directions (a false "approved" with a blocker is forced to
+`changes_requested`; a false "changes_requested" over only nits is forced to `approved`);
+the cycle cap escalates instead of looping forever; a `rejected` verdict escalates
+immediately regardless of remaining cycles; a malformed/unparseable reviewer response
+escalates rather than fabricating a fake approval; the final-accept gate for manual autonomy
+is preserved; and — the signature test — a `coder_scratch` message containing a planted
+secret string never appears in any message sent to the reviewer, proving the isolation
+invariant structurally, not just by convention.
+
+**Verified (live model, `test_reviewer_integration.py`):** the real `qwen2.5-coder:7b`
+reviewer reliably returns a **schema-valid** `Review` end to end through `structured_call`'s
+repair-retry (no exception), with every issue's severity landing in the valid enum — proving
+the reviewer's structured-output contract holds under a live model, not just a scripted one.
+
+#### Does the live reviewer actually catch a real defect? (live validation + an honest limitation)
+
+The hermetic tests above prove the **loop mechanics** are correct by feeding the node scripted
+findings. They cannot prove that a live 7B model will *notice* a subtle defect on its own — so
+a second live harness, `scripts/review_e2e.py`, was built to test exactly that: a scripted
+planner and coder (deterministic, so the specific defect is reproducible) seed a real
+**architecture/duplication defect** — the coder's first attempt reimplements an existing
+helper's tax-rate math (`pricing_rules.apply_levy`) instead of reusing it — behind a
+deliberately **weak** pre-written test that passes on both the buggy and the correct version
+(`total > subtotal`), so only the reviewer, not `verify`, can catch it. The reviewer itself
+runs **live** throughout.
+
+| Run | Reviewer prompt | Result |
+|---|---|---|
+| 1st live run | original ("ground before judging" as guidance) | `verdict=approved`, **0 issues**, empty summary, **no grounding tool calls at all** |
+| 2nd live run | strengthened — "grounding is **mandatory** before approving any non-trivial diff; check for duplicated logic" | identical outcome: `verdict=approved`, **0 issues**, empty summary, **no grounding tool calls** |
+
+**What this shows, precisely:**
+1. **The pipeline is not at fault.** Every wiring point fired correctly both runs — scripted
+   plan → scripted (buggy) coder → real `verify` (passed, as designed) → **live** review →
+   finalize `succeeded`. `retrieve`/`search_code`/`read_file`/`list_dir` were all available to
+   the reviewer in its registry; it simply never called any of them.
+2. **A genuine, reproducible model-capability limitation, not a prompt-wording problem.**
+   Strengthening the system prompt to explicitly mandate grounding — the same class of fix
+   that worked for the coder/planner in Phase 3 (`retrieve` added to their prompts) — made
+   **no observed difference** here. The reviewer emitted its verdict via the forced structured
+   "emit" tool call in ~2 minutes both times with an empty summary and zero issues, consistent
+   with a small model satisfying the schema with minimal effort rather than working through
+   the reasoning the prompt describes. This is a deeper ceiling than instruction wording: a
+   7B model driven through a forced-schema tool call can be "technically compliant" while
+   doing essentially no analysis.
+3. **What remains proven despite this:** the loop's correctness does not depend on the model
+   reliably noticing everything. The severity-override logic, the isolation invariant, the
+   targeted fix hand-off, the bounded cycle + escalation, and the malformed-output fail-safe
+   are all independently proven via the 16 hermetic tests using scripted reviewer responses
+   that *do* contain findings — so when a reviewer (of any capability) does surface a
+   blocker/major, the system is proven to route, fix, re-verify, and re-review it correctly.
+   What isn't proven is that *this* local model will reliably surface a subtle architectural
+   issue unprompted — an honest capability gap, not a design defect.
+4. **Why no further prompt iteration was pursued.** Repeatedly re-wording the prompt hoping to
+   eventually get a lucky pass would drift into tuning the benchmark rather than hardening the
+   system — the same discipline applied in Phase 3's RAG validation. The one legitimate,
+   targeted prompt fix was applied and honestly re-tested; it didn't change the outcome, and
+   that result is reported here rather than concealed or re-run into a favorable draw.
+
+**The smallest real fix, not yet applied:** since the provider abstraction already makes model
+choice config-only, swapping the reviewer role to a stronger (e.g. hosted) model via
+`MODELS__REVIEWER__MODEL`/`MODELS__REVIEWER__PROVIDER` is the natural next lever — a genuine
+capability upgrade rather than another prompt tweak, and it requires zero code changes to
+this phase's implementation.
+
+Validation harnesses: `scripts/review_e2e.py` (live catch → fix → approve attempt, with the
+finding above) — run alongside `scripts/rag_validate.py` and `scripts/memory_e2e.py` from
+Phase 3 for the full live-validation suite.
+
 ---
 
 ## Repository layout
@@ -365,9 +481,9 @@ Validation harnesses: `scripts/rag_validate.py` (`part1` retrieval, `abtest` RAG
 │  │  ├─ core/             # config, logging, tracing, errors, clock
 │  │  ├─ providers/        # LLM provider abstraction + Ollama adapter
 │  │  ├─ tools/            # tool protocol, sandbox, fs/search/git/shell, authorization
-│  │  ├─ agents/           # planner, coder ReAct loop, budgets, shared tool-call parsing
+│  │  ├─ agents/           # planner, coder ReAct loop, reviewer, budgets, tool-call parsing
 │  │  ├─ graph/            # LangGraph state, nodes, routing, checkpointer, instrumentation
-│  │  │  └─ nodes/         # plan, coder, verify, review_stub, finalize, human_gate
+│  │  │  └─ nodes/         # plan, coder, verify, review, finalize, human_gate
 │  │  ├─ verify/           # deterministic verify runner
 │  │  ├─ workspace/        # git-backed workspace lifecycle
 │  │  ├─ rag/              # chunker, embeddings, vector store, BM25, hybrid retriever, indexer, eval
@@ -424,6 +540,7 @@ uv run python ../scripts/rag_validate.py part1     # retrieval works on the real
 uv run python ../scripts/rag_validate.py abtest    # does RAG change agent behavior?
 uv run python ../scripts/memory_e2e.py             # does a past run change future planning?
 uv run python ../scripts/memory_e2e.py simple      # full green pipeline on a trivial task
+uv run python ../scripts/review_e2e.py             # does the reviewer catch a seeded defect?
 
 # 9. Inspect the compiled graph visually (optional)
 uvx --with-editable . --from "langgraph-cli[inmem]" langgraph dev
@@ -460,17 +577,21 @@ OLLAMA__REQUEST_TIMEOUT_S=600        # generous for local CPU; lower for GPU/hos
 OLLAMA__DEFAULT_NUM_CTX=4096         # smaller context = less RAM (helps on a 16 GB box)
 PLANNER__MEMORY_LONG_TERM_K=5        # conventions/decisions injected into planning
 PLANNER__MEMORY_EPISODIC_K=3         # past runs surfaced as "Previous Attempts"
+MODELS__REVIEWER__MODEL=llama3.1:8b  # change the reviewer model independently of the coder
+GRAPH__MAX_REVIEW_CYCLES=2           # review/fix cycles before escalating to a human
+REVIEWER__GROUNDING_STEPS=4          # bounded read-only grounding rounds before emitting Review
 ```
 
 ---
 
 ## Testing
 
-- **Hermetic** (`uv run pytest`) — no external services; runs by default (219 tests).
+- **Hermetic** (`uv run pytest`) — no external services; runs by default (230 tests).
 - **Integration** (`uv run pytest -m integration`) — requires live Ollama, Docker, and/or
   Postgres depending on the test; opt-in so the default run stays fast and deterministic
-  (26 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run, and the
-  RAG/embeddings/retriever/memory + memory-in-planner stack against real pgvector).
+  (27 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run, the
+  RAG/embeddings/retriever/memory + memory-in-planner stack against real pgvector, and the
+  live reviewer schema-validity test).
 
 ---
 
@@ -482,7 +603,7 @@ PLANNER__MEMORY_EPISODIC_K=3         # past runs surfaced as "Previous Attempts"
 | 1 | Core coder loop (tools, sandbox, git workspace, verify, budgets) | ✅ Complete |
 | 2 | LangGraph orchestration + HITL (`plan→…→finalize`, checkpointer, interrupts) | ✅ Complete |
 | 3 | Repository indexing, hybrid RAG, memory | ✅ Complete |
-| 4 | Adversarial reviewer + iteration | 📋 Planned |
+| 4 | Autonomous review & self-correction (fresh-context reviewer, bounded fix loop) | ✅ Complete |
 | 5 | Eval harness | 📋 Planned |
 | 6 | Mission-control UI | 📋 Planned |
 | 7 | Cloud provider swap + scale | 📋 Planned |

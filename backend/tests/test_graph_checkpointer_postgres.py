@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 from app.core.clock import now_iso
-from app.core.config import PlannerSettings, Settings
+from app.core.config import PlannerSettings, ReviewerSettings, Settings
 from app.graph.build_graph import build_graph
 from app.graph.checkpointer import build_checkpointer
-from app.graph.state import Plan, new_run_state
+from app.graph.state import Plan, Review, new_run_state
 from app.providers.base import Capabilities, ChatResponse, ToolCall
 from app.providers.structured import emit_tool_name
 from app.tools.git import Git
@@ -49,6 +49,19 @@ def _emit_plan(payload: dict[str, Any]) -> ChatResponse:
     )
 
 
+def _approving_reviewer() -> FakeProvider:
+    payload = {"verdict": "approved", "issues": [], "summary": "looks correct"}
+    return FakeProvider(
+        capabilities=_CAPS,
+        responses=[
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="rv", name=emit_tool_name(Review), arguments=payload)],
+            )
+        ],
+    )
+
+
 def _sandbox() -> SubprocessSandbox:
     return SubprocessSandbox(Settings(_env_file=None).sandbox.model_copy(update={"backend": "subprocess"}))
 
@@ -67,6 +80,7 @@ def test_postgres_checkpoint_recovery_across_simulated_restart(tmp_path: Path) -
     settings = Settings(
         _env_file=None,
         planner=PlannerSettings(grounding_steps=0),
+        reviewer=ReviewerSettings(grounding_steps=0),
         checkpointer={"backend": "postgres"},  # type: ignore[arg-type]
     )
     config = {"configurable": {"thread_id": f"pg-recover-{now_iso()}"}}
@@ -116,6 +130,7 @@ def test_postgres_checkpoint_recovery_across_simulated_restart(tmp_path: Path) -
                     ),
                 ],
             ),
+            reviewer_provider=_approving_reviewer(),
         )
         state = graph2.get_state(config)  # type: ignore[arg-type]
         assert state.values["plan"].summary == "Add a calculator."

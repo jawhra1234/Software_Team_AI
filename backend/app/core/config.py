@@ -213,6 +213,17 @@ class PlannerSettings(BaseModel):
     memory_max_section_chars: int = 1200
 
 
+class ReviewerSettings(BaseModel):
+    """Bounded read-only grounding for the review node (Task 4.1, ADR-0006)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Max read-only tool-call rounds before forcing a Review emission.
+    grounding_steps: int = 4
+    #: Soft cap on issues the reviewer is instructed to surface, most-severe first.
+    max_issues: int = 10
+
+
 class CheckpointerSettings(BaseModel):
     """LangGraph checkpointer backend (Task 2.11, ADR-0010)."""
 
@@ -279,6 +290,7 @@ class Settings(BaseSettings):
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     coder: CoderSettings = Field(default_factory=CoderSettings)
     planner: PlannerSettings = Field(default_factory=PlannerSettings)
+    reviewer: ReviewerSettings = Field(default_factory=ReviewerSettings)
     checkpointer: CheckpointerSettings = Field(default_factory=CheckpointerSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     rag: RagSettings = Field(default_factory=RagSettings)
