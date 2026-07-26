@@ -1,15 +1,5 @@
 # AI Software Engineering Workspace
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests: 246 hermetic + 27 integration](https://img.shields.io/badge/tests-246%20hermetic%20%2B%2027%20integration-brightgreen)
-![Typing: mypy --strict](https://img.shields.io/badge/mypy-strict-blue)
-![Lint: ruff](https://img.shields.io/badge/lint-ruff-black)
-![Runs locally on Ollama](https://img.shields.io/badge/runs-locally%20on%20Ollama-orange)
-![License: MIT](https://img.shields.io/badge/license-MIT-green)
-
-*(Badges are static, self-reported facts from this repo — there is no CI pipeline yet; the
-numbers are reproducible via `uv run pytest` / `ruff` / `mypy`.)*
-
 A **supervised coding-agent workspace**: a LangGraph state machine that drives a small set of
 capability-bounded agents through a `plan → code → verify → review` loop over a **git-backed
 workspace**, grounded in the real repository, with sandboxed execution, human-in-the-loop
@@ -122,38 +112,16 @@ code change**, and the Phase-5 baseline will show the improvement in hard number
 
 ---
 
-## Where to start
-
-Pick the path that fits why you're here:
-
-- 🧭 **New here — what is this?** → [At a glance](#at-a-glance) above, then the
-  **[runtime flow](docs/runtime-flow.md)** (one annotated diagram of a single run).
-- 🎯 **Evaluating the engineering (interview / review)?** →
-  [Validation & known limitations](#validation--known-limitations) above, then the
-  **[phase writeups](docs/phases/)** — the build story with real evidence: the
-  [RAG A/B](docs/phases/phase-3-rag-and-memory.md), the [honest 7B reviewer finding](docs/phases/phase-4-review.md),
-  and the [eval baseline](docs/phases/phase-5-evals.md).
-- ▶️ **Want to run it?** → [Quickstart](#quickstart) below.
-- 🔍 **Going deep on design?** → **[Architecture](docs/ARCHITECTURE.md)** and the
-  **[decision records (ADRs)](docs/adr/)**.
-
-## Documentation map
-
-Everything lives in **[`docs/`](docs/README.md)** (that's the hub — start there to browse). Two
-kinds of phase docs, deliberately kept separate:
+## Documentation
 
 | | |
 |---|---|
-| **[Docs hub](docs/README.md)** | the index / map of all documentation |
+| **[Docs index](docs/README.md)** | the map of everything |
 | **[Runtime flow](docs/runtime-flow.md)** | what happens inside one run, node by node |
 | **[Architecture](docs/ARCHITECTURE.md)** | the deep design and rationale |
-| **[Phase writeups →](docs/phases/)** *(as-built)* | what actually shipped + how each phase (0–5) was verified |
-| **[Build plans →](docs/build-plans/)** *(specs)* | the forward-looking spec written *before* each phase |
-| **[Roadmap](docs/build-plans/ROADMAP.md)** | the full 0–7 phase sequence and why this order |
+| **[Phase writeups](docs/phases/)** | as-built + how each phase was verified (0–5) |
+| **[Build plans](docs/build-plans/)** · **[Roadmap](docs/build-plans/ROADMAP.md)** | the spec written before each phase, and the full 0–7 sequence |
 | **[ADRs](docs/adr/)** | load-bearing decisions + the alternatives rejected |
-
-Every phase writeup carries `← Hub · ← Previous · Next →` navigation, so you can read the whole
-story front-to-back or jump straight to what you need.
 
 ---
 
