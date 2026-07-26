@@ -46,6 +46,41 @@ exactly the points you choose. It learns across runs (memory) and is scored agai
 It runs **entirely locally** on one small model (`qwen2.5-coder:7b` + `nomic-embed-text`) — and
 swapping in a stronger/hosted model is a **config change, no code** (see [Configuration](#configuration)).
 
+### How the phases connect
+
+Each phase ships a working foundation the next one builds on — nothing is thrown away, and the
+graph's *shape* never changes after Phase 2 (later phases upgrade seams, not topology).
+`✅ shipped & verified · 📋 specced`
+
+```
+ ✅ 0 · FOUNDATIONS ───── one swappable, schema-safe way to call any LLM + logging/tracing
+        │                 └▶ the substrate every agent call sits on
+        ▼
+ ✅ 1 · CODER LOOP ────── tools + sandbox + git workspace + a coder that verifies its own work
+        │                 └▶ a *proven* single agent, ready to wrap in a graph
+        ▼
+ ✅ 2 · ORCHESTRATION ── LangGraph: plan→gate→coder→verify→review→finalize · HITL · checkpoints
+        │                 └▶ the runnable pipeline (grounded on ripgrep, for now)
+        ▼
+ ✅ 3 · GROUNDING ────── hybrid RAG over your *real* code + long-term & episodic memory
+        │                 └▶ upgrades the plan/coder grounding seam — graph untouched
+        ▼
+ ✅ 4 · REVIEW ───────── fresh-context reviewer + bounded, targeted self-correction loop
+        │                 └▶ closes the quality loop — an independent second opinion
+        ▼
+ ✅ 5 · EVALS ────────── scored task suite + deterministic regression gate + recorded baseline
+        │                 └▶ makes quality measurable: "better or worse", not just "different"
+        ▼
+ 📋 6 · MISSION-CONTROL UI ─ Next.js: live graph, streaming, diff viewer, HITL cards
+        │                 └▶ a UI built on a measured, trustworthy core
+        ▼
+ 📋 7 · CLOUD + SCALE ── hosted-model swap, task queue, auth, horizontal-ready
+                          └▶ run it for more than one person, on more than one machine
+```
+
+Read the order rationale in the **[roadmap](docs/build-plans/ROADMAP.md)**; the as-built story
+of each shipped phase is in the **[phase writeups](docs/phases/)**.
+
 ---
 
 ## How it works
