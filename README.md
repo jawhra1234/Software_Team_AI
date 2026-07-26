@@ -70,48 +70,6 @@ The architecture is an orchestrator over **3 real LLM roles** (planner, coder, r
 
 ---
 
-## Validation & known limitations
-
-Everything below is verified in the current repository — nothing aspirational.
-
-**Quality gates (every phase):**
-
-| Gate | Status |
-|---|---|
-| `ruff check` (lint) | ✅ clean |
-| `mypy` (strict) | ✅ clean (121 source files) |
-| Hermetic tests (`pytest`) | ✅ **246 passing** — no external services |
-| Integration tests (`pytest -m integration`) | ✅ **27 passing** — live Ollama / Docker / Postgres |
-| Phase 5 eval baseline | ✅ recorded (`backend/evals/baseline.json`) |
-
-**What the pipeline has *proven* works** (shown end-to-end through the real graph, not just unit tests):
-
-- RAG demonstrably changes behavior — the coder reuses a hidden helper only with retrieval on.
-- Memory carries across runs — a prior run's outcome measurably shapes the next run's plan.
-- The self-correction loop is mechanically correct — severity-gated, isolated review; targeted
-  fixes; bounded cycles that escalate to a human instead of looping.
-- The full green happy path (`plan → coder → verify PASS → review approve → finalize succeeded`)
-  runs clean on tasks within the model's reach.
-
-**Known limitations — these come from the local `qwen2.5-coder:7b-instruct` model, *not* a broken pipeline:**
-
-- The live 7B reviewer **does not reliably catch subtle defects unprompted** (Phase-5
-  `defect_detection_rate` = 0.00). This is a model-capability ceiling — every wiring point fires
-  correctly and the read-only grounding tools are available; the model just doesn't use them
-  deeply. Strengthening the prompt did **not** change it.
-- Multi-step task convergence is weak (Phase-5 `task_success_rate` ≈ 0.33) — notably, on some
-  "failed" tasks the *feature under test still worked* (helper reused, memory carried); the run
-  failed only because the 7B couldn't finish the coding.
-
-**The lever:** model choice is **config-only** (the provider abstraction) — point the coder/reviewer
-at a stronger or hosted model via `MODELS__CODER__MODEL` / `MODELS__REVIEWER__MODEL` with **zero
-code change**, and the Phase-5 baseline will show the improvement in hard numbers.
-
-*Full evidence and the honest findings live in the phase docs — especially
-[Phase 4 (review)](docs/phases/phase-4-review.md) and [Phase 5 (evals)](docs/phases/phase-5-evals.md).*
-
----
-
 ## Documentation
 
 | | |

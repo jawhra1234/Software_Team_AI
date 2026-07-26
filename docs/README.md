@@ -2,31 +2,22 @@
 
 [← Back to project README](../README.md)
 
-The central map. Start with the project [README](../README.md) for the overview, evidence, and
+The map of everything. Start with the project [README](../README.md) for the overview and
 quickstart; come here to go deep.
-
-> **Two kinds of phase docs — don't conflate them:**
-> - **`docs/phases/`** — the **as-built** record: what actually shipped in each phase and how it
->   was verified (incl. honest limitations).
-> - **`docs/build-plans/`** — the **original forward-looking specifications**, written *before*
->   each phase was built.
->
-> Each as-built doc links to its plan, and vice-versa.
 
 ## How it works
 
-| Doc | What it covers |
-|---|---|
-| **[Runtime flow](runtime-flow.md)** | what happens inside a single run — the full node-by-node diagram |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | the deep design: three sources of truth, agent roles, provider abstraction, and the reasoning |
+- **[Runtime flow](runtime-flow.md)** — what happens inside a single run, node by node, with
+  the full diagram.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the deep design: the three sources of truth, the
+  agent roles, the provider abstraction, and the reasoning behind them.
 
-## What was built, phase by phase (as-built)
+## What was built, phase by phase
 
-Each doc follows the same structure — *what it adds · why · architecture · implementation ·
-configuration · testing & validation · live validation · what worked · known limitations · key
-decisions · status*.
+Each doc is the **as-built writeup** — what shipped in that phase and how it was verified. (For
+the forward-looking *plan* of each phase, see the paired build plan.)
 
-| Phase | As-built writeup | Original plan (spec) |
+| Phase | As-built writeup | Plan |
 |---|---|---|
 | 0 · Foundations | [phase-0-foundations.md](phases/phase-0-foundations.md) | [PHASE-0](build-plans/PHASE-0.md) |
 | 1 · Core coder loop | [phase-1-coder-loop.md](phases/phase-1-coder-loop.md) | [PHASE-1](build-plans/PHASE-1.md) |
@@ -37,8 +28,7 @@ decisions · status*.
 
 ## Planning & decisions
 
-| Doc | What it covers |
-|---|---|
-| **[Roadmap](build-plans/ROADMAP.md)** | the full phase sequence (0–7) and why this order |
-| **[Build plans](build-plans/)** | the detailed spec written *before* each phase was built |
-| **[ADRs](adr/)** ([index](adr/README.md)) | the load-bearing decisions and the alternatives rejected |
+- **[Roadmap](build-plans/ROADMAP.md)** — the full phase sequence (0–7) and why this order.
+- **[Build plans](build-plans/)** — the detailed spec written *before* each phase was built.
+- **[Architecture Decision Records](adr/)** — the load-bearing choices and the alternatives
+  rejected ([index](adr/README.md)).
