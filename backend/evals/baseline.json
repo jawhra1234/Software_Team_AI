@@ -1,0 +1,14 @@
+{
+  "stamped_at": "2026-07-26T13:05:09.273611+00:00",
+  "metrics": {
+    "retrieval_precision_at_k": 0.75,
+    "task_success_rate": 0.3333333333333333,
+    "defect_detection_rate": 0.0,
+    "false_flag_rate": 0.0,
+    "memory_influence_rate": 1.0,
+    "avg_review_cycles": 1.0,
+    "total_steps": 22,
+    "total_wall_clock_s": 3224.83,
+    "task_count": 5
+  }
+}

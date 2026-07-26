@@ -11,9 +11,10 @@ tool boundaries, context isolation, and verification — not by human job titles
 [`docs/adr/`](docs/adr/) for the full design and rationale.
 
 > **Status:** Phase 0 (Foundations), Phase 1 (Core coder loop), Phase 2 (LangGraph
-> orchestration + HITL), Phase 3 (Repository indexing, hybrid RAG, and memory), and
-> Phase 4 (Autonomous review & self-correction) are complete and verified. Phases 5–7
-> are specced in [`docs/build-plans/`](docs/build-plans/) and not yet implemented.
+> orchestration + HITL), Phase 3 (Repository indexing, hybrid RAG, and memory), Phase 4
+> (Autonomous review & self-correction), and Phase 5 (Eval harness) are complete and
+> verified. Phases 6–7 are specced in [`docs/build-plans/`](docs/build-plans/) and not
+> yet implemented.
 
 ---
 
@@ -97,7 +98,7 @@ learn from it. Everything else is the Phase-2 orchestration.
 
 ```
   0 ──▶ 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 5 ──▶ 6 ──▶ 7
-  ✅    ✅    ✅    ✅    ✅    📋    📋    📋
+  ✅    ✅    ✅    ✅    ✅    ✅    📋    📋
 ```
 
 | # | Phase | What it adds |
@@ -154,7 +155,7 @@ path to swap in OpenRouter / Gemini / Groq / OpenAI later.
 
 ---
 
-## What's implemented (Phases 0–4)
+## What's implemented (Phases 0–5)
 
 ### Phase 0 — Foundations
 - **Config** (`app/core/config.py`): `pydantic-settings` with a per-role model block
@@ -470,6 +471,93 @@ Validation harnesses: `scripts/review_e2e.py` (live catch → fix → approve at
 finding above) — run alongside `scripts/rag_validate.py` and `scripts/memory_e2e.py` from
 Phase 3 for the full live-validation suite.
 
+### Phase 5 — Eval harness
+
+Phases 3-4 were each proven by running a script by hand and reading the log. That's rigorous
+once, but not **comparable**: there was no way to tell whether next week's prompt tweak made
+things better or worse. Phase 5 turns those one-off scripts into a small, standing, **scored
+regression suite** — every run reduces to hard numbers saved to a baseline, so any later
+change (a prompt edit, a model swap, a config tweak) can be judged *better or worse*, not
+just *different*. It adds no runtime node and changes no graph contract; it's a measurement
+layer that drives the existing pipeline.
+
+```
+  ┌──────────── fixed task suite — 5 frozen fixtures (app/evals/tasks.py) ────────────┐
+  │  happy_path · rag_required · defect_injection · cross_run_memory · retrieval@k     │
+  └───────────────────────────────────────┬───────────────────────────────────────────┘
+                                          │  each task →
+                                          ▼
+                          ┌──────────────────────────────┐
+                          │   run the REAL pipeline live   │  plan→coder→verify→review→finalize
+                          │   & capture the outcome        │  (retrieval task = precision@k only)
+                          └───────────────┬───────────────┘
+                                          ▼   per-task RunReport
+                          ┌──────────────────────────────┐
+                          │      aggregate metrics         │
+                          │  • deterministic → GATE         │  retrieval precision@k
+                          │  • stochastic   → trend         │  success / defect-detect / false-flag / cycles
+                          └───────────────┬───────────────┘
+                                          ▼
+                          ┌──────────────────────────────┐
+                          │   diff vs backend/evals/        │  exit non-zero ONLY on a deterministic
+                          │   baseline.json                 │  drop; stochastic metrics reported, never gated
+                          └──────────────────────────────┘
+```
+
+- **The task suite** (`app/evals/tasks.py`): five frozen fixtures reusing what Phases 3-4
+  already validated live — a happy-path build, a RAG-required task (hidden helper), a
+  defect-injection task (the reviewer *should* catch a planted duplication — its coder is
+  **scripted** so the defect reliably exists), a cross-run memory task (two runs), and a
+  retrieval precision@k measurement. Each carries an automatic pass/fail check — none take
+  arbitrary input, so their numbers are comparable across runs.
+- **The runner** (`app/evals/runner.py`): streams one real graph run to a terminal state
+  (auto-aborting escalation interrupts, since an eval has no human), reducing it to a
+  task-agnostic capture — review verdicts per cycle, retrieved symbols, verify pass/retries,
+  step count, wall-clock.
+- **Metrics, split by reproducibility** (`app/evals/metrics.py`): a **deterministic** set
+  (retrieval precision@k — same index + embeddings → same number, so it's *gate-worthy*) and
+  a **stochastic** set (success rate, defect-detection rate, false-flag rate,
+  cycles-to-converge, steps, latency). The 5-6 task counts are honest *indicative rates*,
+  **not** claimed as statistical precision/recall.
+- **Regression gate** (`app/evals/regression.py` + `scripts/run_evals.py`): diffs a run
+  against `backend/evals/baseline.json` and exits non-zero **only** if a *deterministic*
+  metric regressed — a local 7B jitters run to run, so hard-gating a stochastic metric would
+  fire on noise. Stochastic metrics are printed as a before/after trend.
+- **Tested hermetically** (`test_evals_metrics.py` / `_regression.py` / `_runner.py`): the
+  whole scoring path — aggregation, the deterministic-gate-vs-stochastic-trend split, the
+  baseline round-trip, and `run_graph` capturing a real graph run via `FakeProvider` — runs
+  without a live model, from hand-built reports.
+
+#### The recorded live baseline — and what the numbers honestly say
+
+Running the suite once against the real `qwen2.5-coder:7b` (`scripts/run_evals.py
+--update-baseline`, ~54 min on a 16 GB box) produced `backend/evals/baseline.json`:
+
+| Metric | Value | Reading |
+|---|---|---|
+| **`retrieval_precision_at_k`** (deterministic, gated) | **0.75** | RAG surfaces the right symbol in 3 of 4 fixed queries |
+| `task_success_rate` | 0.33 | 1 of 3 multi-step tasks fully converged |
+| `defect_detection_rate` | 0.00 | the reviewer missed the planted defect (the Phase-4 finding, now quantified) |
+| `false_flag_rate` | 0.00 | the reviewer did **not** wrongly block correct code |
+| `memory_influence_rate` | 1.00 | a past run's memory correctly shaped the next run's planning |
+
+**The key thing the baseline shows** is a clean separation between *what the architecture does*
+and *what the local model can't do*. On two of the "failed" tasks the **feature under test
+actually worked** — the coder reused the hidden helper (`reused_helper=True`), and cross-run
+memory carried run 1's record into run 2's planning (`memory_influenced=True`) — but the run
+still ended `failed` because the 7B couldn't fully converge the multi-step coding. So
+`task_success_rate 0.33` and `defect_detection 0.00` are **model-capability numbers, not
+design defects**, consistent with every Phase 3-4 finding.
+
+This is recorded exactly as it came out — not massaged. It's now the reference every future
+change is measured against: because model choice is a **config-only swap** (the provider
+abstraction), pointing the coder/reviewer at a stronger model should move the stochastic
+metrics up, and the baseline will show it in hard numbers. The deterministic
+`retrieval_precision_at_k = 0.75` is the reproducible anchor the regression gate protects.
+
+Validation harness: `scripts/run_evals.py` (`--category <name>` to run one category,
+`--update-baseline` to record).
+
 ---
 
 ## Repository layout
@@ -488,12 +576,14 @@ Phase 3 for the full live-validation suite.
 │  │  ├─ workspace/        # git-backed workspace lifecycle
 │  │  ├─ rag/              # chunker, embeddings, vector store, BM25, hybrid retriever, indexer, eval
 │  │  ├─ memory/           # long-term (semantic) + episodic memory + ADR ingestion writer
+│  │  ├─ evals/            # Phase-5 eval harness: task suite, runner, metrics, regression gate
 │  │  ├─ db/ api/          # placeholders for Phase 6+
 │  │  └─ ...
+│  ├─ evals/               # baseline.json — the recorded metric baseline the gate diffs against
 │  ├─ tests/               # hermetic + integration tests
 │  └─ langgraph.json       # LangGraph Studio entry point
 ├─ infra/                  # docker-compose, Postgres init, sandbox image
-├─ scripts/                # bootstrap, smoke, seed_memory, and live validation harnesses
+├─ scripts/                # bootstrap, smoke, seed_memory, and live validation/eval harnesses
 ├─ docs/                   # ARCHITECTURE.md, ADRs, phased build plans
 └─ workspaces/             # runtime project sandboxes (git-ignored)
 ```
@@ -542,7 +632,11 @@ uv run python ../scripts/memory_e2e.py             # does a past run change futu
 uv run python ../scripts/memory_e2e.py simple      # full green pipeline on a trivial task
 uv run python ../scripts/review_e2e.py             # does the reviewer catch a seeded defect?
 
-# 9. Inspect the compiled graph visually (optional)
+# 9. Run the scored eval suite live + diff vs baseline (Phase 5; needs pgvector)
+uv run python ../scripts/run_evals.py              # score all 5 tasks, gate on precision@k
+uv run python ../scripts/run_evals.py --update-baseline   # record a new baseline
+
+# 10. Inspect the compiled graph visually (optional)
 uvx --with-editable . --from "langgraph-cli[inmem]" langgraph dev
 ```
 
@@ -586,12 +680,15 @@ REVIEWER__GROUNDING_STEPS=4          # bounded read-only grounding rounds before
 
 ## Testing
 
-- **Hermetic** (`uv run pytest`) — no external services; runs by default (230 tests).
+- **Hermetic** (`uv run pytest`) — no external services; runs by default (246 tests),
+  including the Phase-5 eval scoring path (metrics, regression gate/trend split, and
+  `run_graph` capture) tested from hand-built reports with no live model.
 - **Integration** (`uv run pytest -m integration`) — requires live Ollama, Docker, and/or
   Postgres depending on the test; opt-in so the default run stays fast and deterministic
   (27 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run, the
   RAG/embeddings/retriever/memory + memory-in-planner stack against real pgvector, and the
-  live reviewer schema-validity test).
+  live reviewer schema-validity test). The scored eval suite itself runs as a script
+  (`scripts/run_evals.py`), not a pytest test.
 
 ---
 
@@ -604,7 +701,7 @@ REVIEWER__GROUNDING_STEPS=4          # bounded read-only grounding rounds before
 | 2 | LangGraph orchestration + HITL (`plan→…→finalize`, checkpointer, interrupts) | ✅ Complete |
 | 3 | Repository indexing, hybrid RAG, memory | ✅ Complete |
 | 4 | Autonomous review & self-correction (fresh-context reviewer, bounded fix loop) | ✅ Complete |
-| 5 | Eval harness | 📋 Planned |
+| 5 | Eval harness (scored task suite, deterministic-gated regression, recorded baseline) — see [`PHASE-5.md`](docs/build-plans/PHASE-5.md) | ✅ Complete |
 | 6 | Mission-control UI | 📋 Planned |
 | 7 | Cloud provider swap + scale | 📋 Planned |
 

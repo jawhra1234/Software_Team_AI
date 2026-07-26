@@ -9,7 +9,7 @@ Sequenced to kill risk early and minimize technical debt: build the riskiest cor
 | **2 — LangGraph orchestration + HITL** | `plan→human_gate→coder→verify→review→finalize` graph, Postgres checkpointer, plan-approval interrupt, State schema | [PHASE-2.md](PHASE-2.md) | Specced |
 | **3 — Grounding: RAG + memory** | tree-sitter symbol index, hybrid BM25+vector retrieval, `retrieve` tool, long-term memory | [PHASE-3.md](PHASE-3.md) | Specced |
 | **4 — Autonomous Review & Self-Correction** | Fresh-context reviewer (diff+plan+verify only, read-only grounding), targeted fix-loop bounded + escalating | [PHASE-4.md](PHASE-4.md) | Specced |
-| **5 — Eval harness** ⭐ | Internal SWE-bench-lite-style task suite, metrics, Langfuse dashboards, regression tracking | _to be written_ | Planned |
+| **5 — Eval harness** ⭐ | Small scored task suite reusing Phase 3/4 fixtures; metrics split deterministic (retrieval precision@k, gate-worthy) vs stochastic (success/defect-detection/false-flag rates, cycles, tokens/latency — trend-only); JSON regression tracking gated on the deterministic set | [PHASE-5.md](PHASE-5.md) | Specced |
 | **6 — Mission-control UI** | Next.js: live graph, streaming, diff viewer, HITL cards, timeline | _to be written_ | Planned |
 | **7 — Cloud & scale** | Hosted provider swap, task queue, auth, deploy, horizontal-ready | _to be written_ | Planned |
 
