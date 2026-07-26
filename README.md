@@ -18,13 +18,42 @@ tool boundaries, context isolation, and verification — not by human job titles
 
 ---
 
+## At a glance
+
+You give it a coding request. It **plans** the work grounded in your real repo, **writes**
+the code one task at a time in a sandbox, **verifies** by running your actual tests, has a
+separate **reviewer** critique the diff with fresh eyes, and **finalizes** — pausing for a
+human at exactly the points you choose. It learns across runs (memory) and can be measured
+against a scored task suite.
+
+What each completed phase delivers, in one line:
+
+| Phase | In plain English |
+|---|---|
+| **0 · Foundations** | one swappable, schema-safe way to call any LLM, with logging/tracing |
+| **1 · Coder loop** | an agent that edits files, runs commands in a sandbox, and checks its own work with real tests |
+| **2 · Orchestration** | a LangGraph state machine wiring the agents together, with human-in-the-loop gates and crash-safe checkpoints |
+| **3 · Grounding** | it reads your *actual* code (hybrid RAG) and remembers decisions + past runs, instead of guessing |
+| **4 · Review** | an independent reviewer catches problems and sends targeted fixes back — a real self-correction loop |
+| **5 · Evals** | the whole thing is scored against a fixed task suite, so any change can be proven better or worse |
+
+It runs **entirely locally** on one small model (`qwen2.5-coder:7b`) — and swapping in a
+stronger/hosted model is a **config change, no code** (see [Configuration](#configuration)).
+
+---
+
 ## Architecture flow
 
 Two different "flows" matter here, and it's easy to conflate them: the **runtime flow**
 is what happens *inside a single run* (right now, at any point in the project); the
 **phase flow** is the *order the system itself was built in*. Both are below.
 
-### Runtime flow — what happens inside one run (Phase 2 graph + Phase 3 grounding + Phase 4 review)
+### Runtime flow — what happens inside one run
+
+This is the compiled graph as it stands today: the Phase-2 six-node skeleton, grounded in
+real code + memory (Phase 3), with a real fresh-context reviewer closing the loop (Phase 4).
+Phase 5 (the eval harness) isn't a node here — it *wraps* this whole flow, running it over a
+fixed task suite and scoring the results (see the Phase 5 section below).
 
 ```
   ┌───────────────────── shared knowledge · Postgres + pgvector ──────────────────────┐
@@ -70,10 +99,16 @@ is what happens *inside a single run* (right now, at any point in the project); 
   can retry, accept the current state as-is, or abort the run.
 ```
 
-The **shared knowledge** layer (top) is Phase 3: `PLAN` and `CODER` read real code on
-demand through the `retrieve` tool; `PLAN` also gets durable **memory** injected before it
-drafts; and `FINALIZE` records the run's outcome back to episodic memory so future runs can
-learn from it. Everything else is the Phase-2 orchestration.
+**How to read the diagram, by phase:**
+- **Phase 2** built the six-node skeleton (`plan · human_gate · coder · verify · review ·
+  finalize`) and the escalation-to-human path.
+- **Phase 3** added the **shared knowledge** band on top: `PLAN` and `CODER` read real code
+  on demand via `retrieve`; `PLAN` also gets durable **memory** injected before it drafts;
+  `FINALIZE` writes the run's outcome back to episodic memory so future runs learn from it.
+- **Phase 4** turned `REVIEW` from a rule-of-thumb stub into a real, isolated LLM reviewer
+  driving the targeted `blocker`/`major` → fix cycle.
+- **Phase 5** doesn't appear here — it runs this entire flow over a task suite and scores it
+  (a measurement layer *around* the run, not a step inside it).
 
 - **`plan`** — before drafting, it's automatically handed relevant **memory** (durable
   decisions/conventions + how earlier runs on this project went); it then grounds in the
