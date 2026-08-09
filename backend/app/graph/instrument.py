@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from app.graph.events import EventSink, GraphEvent, NullEventSink
+from app.graph.events import EventSink, GraphEvent, NullEventSink, bind_sink, unbind_sink
 from app.graph.state import AgentState, Budget, HITLRequest
 
 NodeFn = Callable[[AgentState], dict[str, Any]]
@@ -73,7 +73,14 @@ def instrument_node(
                     ),
                 }
 
-        patch = fn(state)
+        # Bind the sink so tool calls *inside* the node stream "tool" events
+        # (Phase 6). No-op when the sink is null. Unbound in finally so an
+        # in-node interrupt (which raises) can't leak the binding.
+        token = bind_sink(sink, name)
+        try:
+            patch = fn(state)
+        finally:
+            unbind_sink(token)
         if enforce_budget:
             budget = state["budget"]
             patch.setdefault(

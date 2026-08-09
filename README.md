@@ -12,9 +12,9 @@ tool boundaries, context isolation, and verification — not by human job titles
 
 > **Status:** Phase 0 (Foundations), Phase 1 (Core coder loop), Phase 2 (LangGraph
 > orchestration + HITL), Phase 3 (Repository indexing, hybrid RAG, and memory), Phase 4
-> (Autonomous review & self-correction), and Phase 5 (Eval harness) are complete and
-> verified. Phases 6–7 are specced in [`docs/build-plans/`](docs/build-plans/) and not
-> yet implemented.
+> (Autonomous review & self-correction), Phase 5 (Eval harness), and Phase 6
+> (Mission-Control UI) are complete and verified. Phase 7 is specced in
+> [`docs/build-plans/`](docs/build-plans/) and not yet implemented.
 
 ---
 
@@ -36,6 +36,7 @@ What each completed phase delivers, in one line:
 | **3 · Grounding** | it reads your *actual* code (hybrid RAG) and remembers decisions + past runs, instead of guessing |
 | **4 · Review** | an independent reviewer catches problems and sends targeted fixes back — a real self-correction loop |
 | **5 · Evals** | the whole thing is scored against a fixed task suite, so any change can be proven better or worse |
+| **6 · Mission-Control UI** | watch a run live in the browser — the graph lighting up node by node, streaming tool activity, the plan/diff/review, and human-approval cards |
 
 It runs **entirely locally** on one small model (`qwen2.5-coder:7b`) — and swapping in a
 stronger/hosted model is a **config change, no code** (see [Configuration](#configuration)).
@@ -133,7 +134,7 @@ fixed task suite and scoring the results (see the Phase 5 section below).
 
 ```
   0 ──▶ 1 ──▶ 2 ──▶ 3 ──▶ 4 ──▶ 5 ──▶ 6 ──▶ 7
-  ✅    ✅    ✅    ✅    ✅    ✅    📋    📋
+  ✅    ✅    ✅    ✅    ✅    ✅    ✅    📋
 ```
 
 | # | Phase | What it adds |
@@ -162,9 +163,10 @@ table can't show, so it's spelled out here:
   Phase 5 measures it against a task suite so later changes can be judged "better" or
   "worse," not just "different."
 - **Phase 5 → 6:** a measured, trustworthy core — only now does it make sense to build a UI
-  on top of it.
-- **Phase 6 → 7:** a working local product — Phase 7 is what it takes to run it for more
-  than one person, on more than one machine.
+  on top of it. Phase 6 wraps the graph in a thin API + a Next.js dashboard **without
+  touching the graph** (it consumes the `EventSink` streaming seam Phase 2 left for it).
+- **Phase 6 → 7:** a working local product with a UI — Phase 7 is what it takes to run it for
+  more than one person, on more than one machine (hosted providers, task queue, deploy).
 
 ---
 
@@ -190,7 +192,7 @@ path to swap in OpenRouter / Gemini / Groq / OpenAI later.
 
 ---
 
-## What's implemented (Phases 0–5)
+## What's implemented (Phases 0–6)
 
 ### Phase 0 — Foundations
 - **Config** (`app/core/config.py`): `pydantic-settings` with a per-role model block
@@ -593,6 +595,63 @@ metrics up, and the baseline will show it in hard numbers. The deterministic
 Validation harness: `scripts/run_evals.py` (`--category <name>` to run one category,
 `--update-baseline` to record).
 
+### Phase 6 — Mission-Control UI
+
+Everything through Phase 5 is headless — driven by scripts and tests. Phase 6 makes a run
+**watchable**: a thin FastAPI service wraps the existing graph, and a Next.js dashboard streams
+each run live in the browser. The crucial constraint: **the graph, nodes, and agents are not
+touched.** The API is a *consumer* of the `EventSink` streaming seam Phase 2 deliberately left
+for "the API layer" (Task 2.14) — so the whole UI is additive, and the 250-test hermetic suite
+is unchanged.
+
+- **Backend API** (`app/api/`, optional `[api]` dependency group so the core stays installable
+  without a web server):
+  - `run_manager.py` drives `build_graph()` on a per-run worker thread, adapts the graph's
+    `EventSink` into an append-only, replayable event log, and answers human pauses via
+    `Command(resume=...)` — the same mechanism the tests and CLI use, now over HTTP. Runs are
+    **serialized** behind a one-slot semaphore (a single local Ollama serves one model, so
+    concurrent runs only thrash it); extra runs show as `queued`.
+  - `server.py` exposes `POST /api/runs`, `GET /api/runs/{id}` (snapshot), `GET
+    /api/runs/{id}/events` (**Server-Sent Events**), `POST /api/runs/{id}/respond` (answer a
+    HITL gate), and `GET /api/health`. It wires the run in the **same proven configuration** the
+    eval harness uses (coder temperature pinned to 0; RAG stack wired best-effort so `retrieve`
+    grounds instead of erroring; falls back to no-RAG if Postgres is down).
+- **Live tool streaming** (`app/graph/events.py`): node-level events alone leave the UI blank
+  during a long-running node, so a small, additive contextvar bridge (`bind_sink` /
+  `emit_tool_event`) surfaces each individual tool call (`retrieve`, `write_file`,
+  `run_command`, …) as a `tool` event. It is a no-op when no sink is bound (every non-API
+  caller and all tests), so the pipeline behaves exactly as before.
+- **Next.js dashboard** (`frontend/`): the six-node pipeline lighting up (active → done →
+  waiting), a streaming timeline of every tool call, live **plan / diff / review** panels, and
+  **human-in-the-loop cards** (approve / revise / abort) when a run pauses. All UI state is
+  derived from the one ordered SSE event stream. Talks to the backend directly (CORS open) to
+  avoid the dev proxy buffering SSE.
+
+**Verified (hermetic, 4 API tests via `TestClient` + scripted providers — no Ollama):** a full
+`auto` run streams to `succeeded` over SSE with `tool` events present; a `semi` run pauses at
+the plan-approval gate and `POST /respond` resumes it to `succeeded`; an unknown run returns
+404. The existing suite still passes in full — **250 hermetic tests**, `ruff`/`mypy --strict`
+clean — confirming the pipeline is undisturbed.
+
+**Verified (live):** the dashboard drives real `qwen2.5-coder:7b` runs end to end — a clean run
+produced a correct `calc.py` + a real passing `test_calc.py` (verify PASS → review approved →
+`succeeded`), shown live node-by-node.
+
+#### An honest note on live UI runs
+
+The same **model-capability ceiling** documented in Phases 3–5 is very visible in the UI on a
+16 GB box: on a trivial calculator task the local 7B succeeds on a clean plan but, on other
+runs, flakes in model-specific ways (an over-granular plan, an empty or duplicated test, the
+model ceasing to call tools). In **every** case the pipeline caught it safely — the coder's
+no-progress / budget guards fired and the run **escalated to a human card** rather than
+crashing or looping. That safe-degradation *is* the system working as designed; the
+inconsistency is the small model, not the UI or the pipeline. The honest fix for reliable runs
+is the one Phase 5 makes measurable: swap the coder to a stronger model via
+`MODELS__CODER__MODEL` (a config-only change) — the hosted-provider adapter for that is Phase 7.
+
+Run it: `uvicorn app.api.server:app --port 8000` (backend) + `npm run dev` in `frontend/`
+(UI on `http://localhost:3100`). See the [Quickstart](#quickstart).
+
 ---
 
 ## Repository layout
@@ -612,11 +671,13 @@ Validation harness: `scripts/run_evals.py` (`--category <name>` to run one categ
 │  │  ├─ rag/              # chunker, embeddings, vector store, BM25, hybrid retriever, indexer, eval
 │  │  ├─ memory/           # long-term (semantic) + episodic memory + ADR ingestion writer
 │  │  ├─ evals/            # Phase-5 eval harness: task suite, runner, metrics, regression gate
-│  │  ├─ db/ api/          # placeholders for Phase 6+
+│  │  ├─ api/              # Phase-6 Mission-Control API: run manager + FastAPI/SSE server
+│  │  ├─ db/               # placeholder for Phase 7+
 │  │  └─ ...
 │  ├─ evals/               # baseline.json — the recorded metric baseline the gate diffs against
 │  ├─ tests/               # hermetic + integration tests
 │  └─ langgraph.json       # LangGraph Studio entry point
+├─ frontend/               # Phase-6 Next.js Mission-Control dashboard (live run viewer)
 ├─ infra/                  # docker-compose, Postgres init, sandbox image
 ├─ scripts/                # bootstrap, smoke, seed_memory, and live validation/eval harnesses
 ├─ docs/                   # ARCHITECTURE.md, ADRs, phased build plans
@@ -671,7 +732,13 @@ uv run python ../scripts/review_e2e.py             # does the reviewer catch a s
 uv run python ../scripts/run_evals.py              # score all 5 tasks, gate on precision@k
 uv run python ../scripts/run_evals.py --update-baseline   # record a new baseline
 
-# 10. Inspect the compiled graph visually (optional)
+# 10. Mission-Control UI (Phase 6) — watch a run live in the browser
+uv pip install -e ".[api]"                         # one-time: the optional web deps
+uv run uvicorn app.api.server:app --port 8000      # terminal 1: the backend API
+#   then, in terminal 2:
+cd ../frontend && npm install && npm run dev        # UI on http://localhost:3100
+
+# 11. Inspect the compiled graph visually (optional)
 uvx --with-editable . --from "langgraph-cli[inmem]" langgraph dev
 ```
 
@@ -715,9 +782,11 @@ REVIEWER__GROUNDING_STEPS=4          # bounded read-only grounding rounds before
 
 ## Testing
 
-- **Hermetic** (`uv run pytest`) — no external services; runs by default (246 tests),
+- **Hermetic** (`uv run pytest`) — no external services; runs by default (250 tests),
   including the Phase-5 eval scoring path (metrics, regression gate/trend split, and
-  `run_graph` capture) tested from hand-built reports with no live model.
+  `run_graph` capture) tested from hand-built reports with no live model, and the Phase-6
+  API end-to-end (run → live SSE → HITL respond → succeeded) via `TestClient` + scripted
+  providers, again with no live model.
 - **Integration** (`uv run pytest -m integration`) — requires live Ollama, Docker, and/or
   Postgres depending on the test; opt-in so the default run stays fast and deterministic
   (27 tests: Docker sandbox, live Ollama, Postgres checkpointer, live e2e coder run, the
@@ -737,7 +806,7 @@ REVIEWER__GROUNDING_STEPS=4          # bounded read-only grounding rounds before
 | 3 | Repository indexing, hybrid RAG, memory | ✅ Complete |
 | 4 | Autonomous review & self-correction (fresh-context reviewer, bounded fix loop) | ✅ Complete |
 | 5 | Eval harness (scored task suite, deterministic-gated regression, recorded baseline) — see [`PHASE-5.md`](docs/build-plans/PHASE-5.md) | ✅ Complete |
-| 6 | Mission-control UI | 📋 Planned |
+| 6 | Mission-Control UI (FastAPI/SSE + Next.js live run viewer, additive over the graph) | ✅ Complete |
 | 7 | Cloud provider swap + scale | 📋 Planned |
 
 Full plans: [`docs/build-plans/`](docs/build-plans/).

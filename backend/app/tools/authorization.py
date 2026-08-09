@@ -21,6 +21,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.graph.events import emit_tool_event
 from app.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 from app.tools.security import PathJailError, resolve_within
 
@@ -145,4 +146,5 @@ def execute_tool(
 
     result.output = truncate_output(result.output, policy.output_tail_chars)
     log.info("tool_executed", tool=name, ok=result.ok)
+    emit_tool_event(name, result.ok)  # best-effort live UI event (Phase 6); no-op without a sink
     return result
