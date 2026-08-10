@@ -26,6 +26,14 @@ separate **reviewer** critique the diff with fresh eyes, and **finalizes** — p
 human at exactly the points you choose. It learns across runs (memory) and can be measured
 against a scored task suite.
 
+## Output
+<img width="1821" height="741" alt="1" src="https://github.com/user-attachments/assets/6eb6c4c8-1a6d-4bcd-a9fb-4c639f7b448a" />
+
+<img width="814" height="532" alt="softwareTeam3" src="https://github.com/user-attachments/assets/1d6432fd-8b9e-4ec6-980b-831631ac54c4" />
+
+<img width="774" height="552" alt="softwareTeam4" src="https://github.com/user-attachments/assets/4bc653c5-a714-4f8c-86c2-6ad92d8817c3" />
+
+
 What each completed phase delivers, in one line:
 
 | Phase | In plain English |
